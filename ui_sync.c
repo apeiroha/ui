@@ -66,15 +66,15 @@ ui_MutexLock(uint64_t mh)
                 return;
 
             ui_Goro *cur = v->current;
-            cur->wait_next = NULL;
+            cur->wq_next = NULL;
             if (!m->wait_queue)
                 m->wait_queue = cur;
             else
             {
                 ui_Goro *p = m->wait_queue;
-                while (p->wait_next)
-                    p = p->wait_next;
-                p->wait_next = cur;
+                while (p->wq_next)
+                    p = p->wq_next;
+                p->wq_next = cur;
             }
             m->wait_count++;
 
@@ -108,9 +108,9 @@ ui_MutexUnlock(uint64_t mh)
     if (m->wait_count > 0)
     {
         ui_Goro *w = m->wait_queue;
-        m->wait_queue = w->wait_next;
+        m->wait_queue = w->wq_next;
         m->wait_count--;
-        w->wait_next = NULL;
+        w->wq_next = NULL;
         w->state = UI_READY;
         ui_wakeup(w);
     }
@@ -143,9 +143,9 @@ ui_CondWait(uint64_t ch, uint64_t mh)
     if (m->wait_count > 0)
     {
         ui_Goro *w = m->wait_queue;
-        m->wait_queue = w->wait_next;
+        m->wait_queue = w->wq_next;
         m->wait_count--;
-        w->wait_next = NULL;
+        w->wq_next = NULL;
         w->state = UI_READY;
         ui_wakeup(w);
     }
@@ -159,15 +159,15 @@ ui_CondWait(uint64_t ch, uint64_t mh)
             return;
 
         ui_Goro *cur = v->current;
-        cur->wait_next = NULL;
+        cur->wq_next = NULL;
         if (!c->wait_queue)
             c->wait_queue = cur;
         else
         {
             ui_Goro *p = c->wait_queue;
-            while (p->wait_next)
-                p = p->wait_next;
-            p->wait_next = cur;
+            while (p->wq_next)
+                p = p->wq_next;
+            p->wq_next = cur;
         }
         c->wait_count++;
 
@@ -186,9 +186,9 @@ ui_CondSignal(uint64_t ch)
         return;
 
     ui_Goro *w = c->wait_queue;
-    c->wait_queue = w->wait_next;
+    c->wait_queue = w->wq_next;
     c->wait_count--;
-    w->wait_next = NULL;
+    w->wq_next = NULL;
     w->state = UI_READY;
     ui_wakeup(w);
 }
@@ -203,9 +203,9 @@ ui_CondBroadcast(uint64_t ch)
     while (c->wait_queue)
     {
         ui_Goro *w = c->wait_queue;
-        c->wait_queue = w->wait_next;
+        c->wait_queue = w->wq_next;
         c->wait_count--;
-        w->wait_next = NULL;
+        w->wq_next = NULL;
         w->state = UI_READY;
         ui_wakeup(w);
     }

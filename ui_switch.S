@@ -4,12 +4,21 @@
 .globl ui_trampoline
 
 # void ui_switch(void **from_rsp, void *to_rsp)
+#   rdi = pointer to save current RSP into
+#   rsi = VALUE of new RSP to load
 ui_switch:
-    pushq %r15
-    pushq %r14
-    pushq %r13
-    pushq %r12
-    pushq %rbx
+    pushq %rbp
+    movq  %rsp, (%rdi)
+    movq  %rsi, %rsp
+    popq  %rbp
+    retq
+
+# void ui_first_switch(void *sched_rsp_ptr, void *to_rsp)
+#   rdi = pointer to scheduler's RSP save location (v->sched_rsp_ptr)
+#   rsi = new RSP to load (g->rsp)
+# Like ui_switch, but for the initial goroutine entry.
+# The goroutine's stack has 6 callee-saved regs + ret addr.
+ui_first_switch:
     pushq %rbp
     movq  %rsp, (%rdi)
     movq  %rsi, %rsp
@@ -21,21 +30,9 @@ ui_switch:
     popq  %r15
     retq
 
-# void ui_first_switch(void *to_rsp)
-#   rdi = new RSP (goroutine stack, set up by ui_goro_init)
-ui_first_switch:
-    movq  %rdi, %rsp
-    popq  %rbp
-    popq  %rbx
-    popq  %r12
-    popq  %r13
-    popq  %r14
-    popq  %r15
-    retq
-
-# Trampoline for first goroutine entry.
-# On entry: rbx = entry function, r12 = arg
-# Call entry(arg), then exit.
+# ui_trampoline: calls goro->entry(goro->arg)
+# Then jumps to ui_goro_exit.
+# rbx = entry, r12 = arg (set up by ui_first_switch / goro init)
 ui_trampoline:
     movq  %r12, %rdi
     callq *%rbx

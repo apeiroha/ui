@@ -125,13 +125,8 @@ drain_cqes(ui_vCPU *v)
             ui_Goro *g = (ui_Goro *)(uintptr_t)cqe->user_data;
             g->io_result = cqe->res;
             g->state = UI_READY;
-            /* Push to local queue */
-            if (v->runq_tail - v->runq_head < UI_RUNQ_CAP)
-            {
-                int idx = v->runq_tail % UI_RUNQ_CAP;
-                v->runq[idx] = g;
-                v->runq_tail++;
-            }
+            /* Push to local runq via circular list */
+            ui_runq_insert(v, g);
         }
 
         head++;

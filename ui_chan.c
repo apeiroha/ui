@@ -50,9 +50,9 @@ ui_wake_one(ui_Goro **list, int *count)
         return;
 
     ui_Goro *w = *list;
-    *list = w->wait_next;
+    *list = w->wq_next;
     (*count)--;
-    w->wait_next = NULL;
+    w->wq_next = NULL;
     w->state = UI_READY;
     ui_wakeup(w);
 }
@@ -106,15 +106,15 @@ ui_ChanSend(uint64_t ch, const void *val)
                 return;
 
             ui_Goro *cur = v->current;
-            cur->wait_next = NULL;
+            cur->wq_next = NULL;
             if (!c->send_wait)
                 c->send_wait = cur;
             else
             {
                 ui_Goro *p = c->send_wait;
-                while (p->wait_next)
-                    p = p->wait_next;
-                p->wait_next = cur;
+                while (p->wq_next)
+                    p = p->wq_next;
+                p->wq_next = cur;
             }
             c->send_count++;
 
@@ -161,15 +161,15 @@ ui_ChanRecv(uint64_t ch, void *val)
                 return;
 
             ui_Goro *cur = v->current;
-            cur->wait_next = NULL;
+            cur->wq_next = NULL;
             if (!c->recv_wait)
                 c->recv_wait = cur;
             else
             {
                 ui_Goro *p = c->recv_wait;
-                while (p->wait_next)
-                    p = p->wait_next;
-                p->wait_next = cur;
+                while (p->wq_next)
+                    p = p->wq_next;
+                p->wq_next = cur;
             }
             c->recv_count++;
 
@@ -245,9 +245,9 @@ ui_ChanClose(uint64_t ch)
     while (c->send_wait)
     {
         ui_Goro *w = c->send_wait;
-        c->send_wait = w->wait_next;
+        c->send_wait = w->wq_next;
         c->send_count--;
-        w->wait_next = NULL;
+        w->wq_next = NULL;
         w->state = UI_READY;
         ui_wakeup(w);
     }
@@ -255,9 +255,9 @@ ui_ChanClose(uint64_t ch)
     while (c->recv_wait)
     {
         ui_Goro *w = c->recv_wait;
-        c->recv_wait = w->wait_next;
+        c->recv_wait = w->wq_next;
         c->recv_count--;
-        w->wait_next = NULL;
+        w->wq_next = NULL;
         w->state = UI_READY;
         ui_wakeup(w);
     }

@@ -45,8 +45,14 @@ struct ui_Goro
 
     int       state;
     int       home_vcpu;
-    ui_Goro  *runq_next;
-    ui_Goro  *wait_next;
+    int       first_run;  /* 1 = never scheduled yet, use ui_first_switch */
+    /* Intrusive circular linked list (runq) */
+    ui_Goro  *prev;
+    ui_Goro  *next;
+    /* Wait queue link */
+    ui_Goro  *wq_prev;
+    ui_Goro  *wq_next;
+
     ui_Goro  *joiner;
 
     void     *chan_ptr;
@@ -58,9 +64,8 @@ typedef struct
 {
     pthread_t        thread;
     int              id;
-    atomic_int       runq_head;
-    atomic_int       runq_tail;
-    ui_Goro         *runq[UI_RUNQ_CAP];
+    /* Sentinel for intrusive circular runq list */
+    ui_Goro          runq_sentinel;
     int              event_fd;
     int              ring_fd;
     unsigned        *sq_head, *sq_tail, *sq_ring_mask, *sq_ring_entries;
@@ -79,8 +84,6 @@ typedef struct
     ui_vCPU         *vcpus;
     int              nvcpus;
     atomic_int       active_count;
-    ui_Goro         *global_head;
-    ui_Goro         *global_tail;
     pthread_mutex_t  global_lock;
     ui_Goro         *free_list;
     pthread_mutex_t  free_lock;
@@ -92,7 +95,10 @@ typedef struct
 
 extern ui_Sched g_ui_sched;
 
+extern __thread ui_Goro *ui_current_goro;
+
 extern void   ui_switch(void **from_rsp, void *to_rsp);
+extern void   ui_first_switch(void **sched_rsp_ptr, void *to_rsp);
 extern void   ui_trampoline(void);
 
 void          ui_schedule(void);
@@ -103,5 +109,10 @@ int           ui_stack_init(ui_Goro *g, int stack_size);
 void          ui_stack_destroy(ui_Goro *g);
 int           ui_stack_grow(ui_Goro *g, void *fault_addr);
 void         *ui_stack_bottom(ui_Goro *g);
+
+void          ui_runq_init(ui_vCPU *v);
+void          ui_runq_insert(ui_vCPU *v, ui_Goro *g);
+void          ui_runq_remove(ui_Goro *g);
+int           ui_runq_empty(ui_vCPU *v);
 
 #endif
