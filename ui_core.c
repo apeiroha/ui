@@ -24,13 +24,26 @@ ui_get_vcpu(void)
 }
 
 static int
+ui_get_vcpu_id(void)
+{
+    pthread_t self = pthread_self();
+    for (int i = 0; i < g_ui_sched.nvcpus; i++)
+    {
+        if (pthread_equal(g_ui_sched.vcpus[i].thread, self))
+            return i;
+    }
+    return 0;
+}
+
+static int
 ui_enqueue_local(ui_vCPU *v, ui_Goro *g)
 {
-    if (v->runq_tail - v->runq_head < UI_RUNQ_CAP)
+    int tail = atomic_load(&v->runq_tail);
+    int head = atomic_load(&v->runq_head);
+    if (tail - head < UI_RUNQ_CAP)
     {
-        int idx = v->runq_tail % UI_RUNQ_CAP;
-        v->runq[idx] = g;
-        v->runq_tail++;
+        v->runq[tail % UI_RUNQ_CAP] = g;
+        atomic_store(&v->runq_tail, tail + 1);
         return 0;
     }
     return -1;
@@ -53,11 +66,12 @@ ui_enqueue_global(ui_Goro *g)
 static ui_Goro *
 ui_dequeue_local(ui_vCPU *v)
 {
-    if (v->runq_head < v->runq_tail)
+    int head = atomic_load(&v->runq_head);
+    int tail = atomic_load(&v->runq_tail);
+    if (head < tail)
     {
-        int idx = v->runq_head % UI_RUNQ_CAP;
-        ui_Goro *g = v->runq[idx];
-        v->runq_head++;
+        ui_Goro *g = v->runq[head % UI_RUNQ_CAP];
+        atomic_store(&v->runq_head, head + 1);
         return g;
     }
     return NULL;
@@ -79,6 +93,48 @@ ui_dequeue_global(void)
     return g;
 }
 
+static ui_Goro *
+ui_steal_work(ui_vCPU *v)
+{
+    for (int attempt = 0; attempt < g_ui_sched.nvcpus * 2; attempt++)
+    {
+        int vid = rand() % g_ui_sched.nvcpus;
+        if (vid == v->id)
+            continue;
+
+        ui_vCPU *victim = &g_ui_sched.vcpus[vid];
+        int vhead = atomic_load(&victim->runq_head);
+        int vtail = atomic_load(&victim->runq_tail);
+        int n = vtail - vhead;
+
+        if (n > 1)
+        {
+            int steal_n = n / 2;
+            /* Try to CAS the head forward */
+            if (atomic_compare_exchange_strong(&victim->runq_head, &vhead, vhead + steal_n))
+            {
+                for (int i = 0; i < steal_n; i++)
+                {
+                    ui_Goro *sg = victim->runq[(vhead + i) % UI_RUNQ_CAP];
+                    int t = atomic_load(&v->runq_tail);
+                    int h = atomic_load(&v->runq_head);
+                    if (t - h < UI_RUNQ_CAP)
+                    {
+                        v->runq[t % UI_RUNQ_CAP] = sg;
+                        atomic_store(&v->runq_tail, t + 1);
+                    }
+                    else
+                    {
+                        ui_enqueue_global(sg);
+                    }
+                }
+                return ui_dequeue_local(v);
+            }
+        }
+    }
+    return NULL;
+}
+
 void
 ui_schedule(void)
 {
@@ -86,10 +142,12 @@ ui_schedule(void)
     if (!v)
         return;
 
-    /* Try local queue, then global */
+    /* Try local, global, steal */
     ui_Goro *g = ui_dequeue_local(v);
     if (!g)
         g = ui_dequeue_global();
+    if (!g)
+        g = ui_steal_work(v);
 
     if (!g)
         return;
@@ -97,11 +155,8 @@ ui_schedule(void)
     g->state = UI_RUNNING;
     v->current = g;
 
-    /* Save scheduler context (v->sched_rsp), load goroutine context (g->rsp) */
     ui_switch(&v->sched_rsp, g->rsp);
 
-    /* Goroutine yielded, we're back.
-     * g->rsp now holds goroutine's yield point. */
     v->current = NULL;
 
     if (g->state == UI_DEAD)
@@ -118,16 +173,12 @@ ui_schedule(void)
         g->wait_next = g_ui_sched.free_list;
         g_ui_sched.free_list = g;
         pthread_mutex_unlock(&g_ui_sched.free_lock);
+        atomic_fetch_sub(&g_ui_sched.active_count, 1);
     }
     else if (g->state == UI_READY)
     {
-        /* yield: re-enqueue */
         if (ui_enqueue_local(v, g) < 0)
             ui_enqueue_global(g);
-    }
-    else if (g->state == UI_WAITING)
-    {
-        /* waiting: don't enqueue — stayed in wait list */
     }
 }
 
@@ -222,20 +273,24 @@ ui_Init(void)
     if (ui_setup_signal_handler() < 0)
         return -1;
 
-    g_ui_sched.nvcpus = 1;
-    g_ui_sched.vcpus = calloc(g_ui_sched.nvcpus, sizeof(ui_vCPU));
+    int ncpus = (int)sysconf(_SC_NPROCESSORS_ONLN);
+    if (ncpus < 1) ncpus = 1;
+    if (ncpus > UI_MAX_VCPUS) ncpus = UI_MAX_VCPUS;
+
+    g_ui_sched.nvcpus = ncpus;
+    g_ui_sched.vcpus = calloc((size_t)ncpus, sizeof(ui_vCPU));
     if (!g_ui_sched.vcpus)
     {
         ui_teardown_signal_handler();
         return -1;
     }
 
-    for (int i = 0; i < g_ui_sched.nvcpus; i++)
+    for (int i = 0; i < ncpus; i++)
     {
         ui_vCPU *v = &g_ui_sched.vcpus[i];
         v->id = i;
         v->event_fd = eventfd(0, EFD_NONBLOCK);
-        v->running = 1;
+        atomic_store(&v->running, 1);
     }
 
     g_ui_sched.initialized = 1;
@@ -250,7 +305,7 @@ ui_Fini(void)
 
     for (int i = 0; i < g_ui_sched.nvcpus; i++)
     {
-        g_ui_sched.vcpus[i].running = 0;
+        atomic_store(&g_ui_sched.vcpus[i].running, 0);
         if (g_ui_sched.vcpus[i].event_fd >= 0)
             close(g_ui_sched.vcpus[i].event_fd);
     }
@@ -268,16 +323,6 @@ ui_goro_init(ui_Goro *g)
     void *bottom = ui_stack_bottom(g);
     uint64_t *sp = (uint64_t *)bottom;
 
-    /* Stack layout for first switch:
-     *   [rbp = 0]
-     *   [rbx = entry]
-     *   [r12 = arg]
-     *   [r13 = 0]
-     *   [r14 = 0]
-     *   [r15 = 0]
-     *   [ret = ui_trampoline]
-     * Trampoline: mov r12->rdi; call *rbx; jmp ui_goro_exit
-     */
     *--sp = (uint64_t)(uintptr_t)ui_trampoline;
     *--sp = 0;
     *--sp = 0;
@@ -331,9 +376,36 @@ ui_goro_exit(void)
     ui_Goro *g = v->current;
     g->state = UI_DEAD;
 
-    /* Switch back to scheduler. The scheduler will handle cleanup. */
     v->current = NULL;
     ui_switch(&g->rsp, v->sched_rsp);
+}
+
+static int
+ui_pick_vcpu(void)
+{
+    int caller = ui_get_vcpu_id();
+    /* Put on caller's vCPU if possible, otherwise round-robin */
+    int target = atomic_load(&g_ui_sched.vcpus[caller].runq_tail) -
+                 atomic_load(&g_ui_sched.vcpus[caller].runq_head);
+    if (target < UI_RUNQ_CAP)
+        return caller;
+    return rand() % g_ui_sched.nvcpus;
+}
+
+static void
+ui_spawn_enqueue(ui_Goro *g)
+{
+    g->home_vcpu = ui_pick_vcpu();
+    ui_vCPU *v = &g_ui_sched.vcpus[g->home_vcpu];
+
+    atomic_fetch_add(&g_ui_sched.active_count, 1);
+
+    if (ui_enqueue_local(v, g) < 0)
+        ui_enqueue_global(g);
+
+    /* Kick the target vCPU if it might be idle */
+    uint64_t val = 1;
+    write(v->event_fd, &val, sizeof(val));
 }
 
 uint64_t
@@ -349,9 +421,7 @@ ui_GoSized(ui_Func0 f, int stack_size)
     if (!g)
         return 0;
 
-    if (ui_enqueue_local(&g_ui_sched.vcpus[0], g) < 0)
-        ui_enqueue_global(g);
-
+    ui_spawn_enqueue(g);
     return (uint64_t)(uintptr_t)g;
 }
 
@@ -391,9 +461,7 @@ ui_Go1Sized(void *fn, uintptr_t arg, int stack_size)
         return 0;
     }
 
-    if (ui_enqueue_local(&g_ui_sched.vcpus[0], g) < 0)
-        ui_enqueue_global(g);
-
+    ui_spawn_enqueue(g);
     return (uint64_t)(uintptr_t)g;
 }
 
@@ -406,7 +474,6 @@ ui_Yield(void)
 
     ui_Goro *g = v->current;
     g->state = UI_READY;
-    /* Save goroutine context, load scheduler context */
     ui_switch(&g->rsp, v->sched_rsp);
 }
 
@@ -439,16 +506,17 @@ ui_wakeup(ui_Goro *g)
 
     g->state = UI_READY;
 
-    if (ui_enqueue_local(&g_ui_sched.vcpus[0], g) < 0)
+    int target = g->home_vcpu;
+    if (target < 0 || target >= g_ui_sched.nvcpus)
+        target = 0;
+
+    ui_vCPU *v_target = &g_ui_sched.vcpus[target];
+
+    if (ui_enqueue_local(v_target, g) < 0)
         ui_enqueue_global(g);
 
-    /* Kick eventfd if vCPU might be idle */
-    int fd = g_ui_sched.vcpus[0].event_fd;
-    if (fd >= 0)
-    {
-        uint64_t val = 1;
-        write(fd, &val, sizeof(val));
-    }
+    uint64_t val = 1;
+    write(v_target->event_fd, &val, sizeof(val));
 }
 
 static void
@@ -463,42 +531,32 @@ ui_vcpu_idle(ui_vCPU *v)
     }
 }
 
-static int
-ui_has_work(ui_vCPU *v)
-{
-    if (v->runq_head < v->runq_tail)
-        return 1;
-
-    pthread_mutex_lock(&g_ui_sched.global_lock);
-    int has = (g_ui_sched.global_head != NULL);
-    pthread_mutex_unlock(&g_ui_sched.global_lock);
-    return has;
-}
-
 static void *
 ui_vcpu_main(void *arg)
 {
     ui_vCPU *v = arg;
 
-    while (v->running)
+    while (atomic_load(&v->running))
     {
         v->tick++;
         ui_schedule();
 
         if (!v->current)
         {
-            if (!ui_has_work(v))
+            /* Check if all work is done */
+            if (atomic_load(&g_ui_sched.active_count) == 0 &&
+                atomic_load(&v->runq_head) >= atomic_load(&v->runq_tail))
             {
-                /* No goroutines ready — check if any exist */
-                pthread_mutex_lock(&g_ui_sched.global_lock);
-                int exists = (g_ui_sched.global_head != NULL);
-                pthread_mutex_unlock(&g_ui_sched.global_lock);
-                if (!exists && v->runq_head >= v->runq_tail)
+                /* Try global queue one more time */
+                ui_Goro *gg = ui_dequeue_global();
+                if (!gg)
                 {
-                    /* No goroutines at all — exit */
-                    v->running = 0;
+                    atomic_store(&v->running, 0);
                     break;
                 }
+                /* Put it back */
+                ui_enqueue_global(gg);
+                continue;
             }
             ui_vcpu_idle(v);
         }
@@ -512,8 +570,26 @@ ui_Run(void)
     if (g_ui_sched.nvcpus == 0)
         return;
 
+    /* vCPU 0 runs on calling thread */
     ui_vCPU *main_v = &g_ui_sched.vcpus[0];
     main_v->thread = pthread_self();
 
+    /* Start other vCPUs */
+    for (int i = 1; i < g_ui_sched.nvcpus; i++)
+    {
+        ui_vCPU *v = &g_ui_sched.vcpus[i];
+        pthread_create(&v->thread, NULL, ui_vcpu_main, v);
+    }
+
+    /* Run vCPU 0 scheduler */
     ui_vcpu_main(main_v);
+
+    /* Signal all vCPUs to stop and join */
+    for (int i = 1; i < g_ui_sched.nvcpus; i++)
+    {
+        atomic_store(&g_ui_sched.vcpus[i].running, 0);
+        uint64_t val = 1;
+        write(g_ui_sched.vcpus[i].event_fd, &val, sizeof(val));
+        pthread_join(g_ui_sched.vcpus[i].thread, NULL);
+    }
 }

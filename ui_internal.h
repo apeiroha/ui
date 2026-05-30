@@ -14,6 +14,7 @@
 #include <signal.h>
 #include <time.h>
 #include <pthread.h>
+#include <stdatomic.h>
 
 #define UI_PAGE_SIZE        4096
 #define UI_STACK_RESERVE    (8 * 1024 * 1024)
@@ -43,6 +44,7 @@ struct ui_Goro
     void     *arg;
 
     int       state;
+    int       home_vcpu;
     ui_Goro  *runq_next;
     ui_Goro  *wait_next;
     ui_Goro  *joiner;
@@ -54,34 +56,34 @@ struct ui_Goro
 
 typedef struct
 {
-    pthread_t  thread;
-    int        id;
-    ui_Goro   *runq[UI_RUNQ_CAP];
-    int        runq_head;
-    int        runq_tail;
-    int        event_fd;
-    int        ring_fd;
-    /* io_uring ring (raw — no liburing dependency) */
-    unsigned  *sq_head, *sq_tail, *sq_ring_mask, *sq_ring_entries;
-    unsigned  *sq_flags, *sq_array;
+    pthread_t        thread;
+    int              id;
+    atomic_int       runq_head;
+    atomic_int       runq_tail;
+    ui_Goro         *runq[UI_RUNQ_CAP];
+    int              event_fd;
+    int              ring_fd;
+    unsigned        *sq_head, *sq_tail, *sq_ring_mask, *sq_ring_entries;
+    unsigned        *sq_flags, *sq_array;
     struct io_uring_sqe *sq_sqes;
-    unsigned  *cq_head, *cq_tail, *cq_ring_mask, *cq_ring_entries;
+    unsigned        *cq_head, *cq_tail, *cq_ring_mask, *cq_ring_entries;
     struct io_uring_cqe *cq_cqes;
-    void      *sched_rsp;
-    ui_Goro   *current;
-    int        running;
-    long       tick;
+    void            *sched_rsp;
+    ui_Goro         *current;
+    atomic_int       running;
+    long             tick;
 } ui_vCPU;
 
 typedef struct
 {
-    ui_vCPU     *vcpus;
-    int          nvcpus;
-    ui_Goro     *global_head;
-    ui_Goro     *global_tail;
-    pthread_mutex_t global_lock;
-    ui_Goro     *free_list;
-    pthread_mutex_t free_lock;
+    ui_vCPU         *vcpus;
+    int              nvcpus;
+    atomic_int       active_count;
+    ui_Goro         *global_head;
+    ui_Goro         *global_tail;
+    pthread_mutex_t  global_lock;
+    ui_Goro         *free_list;
+    pthread_mutex_t  free_lock;
 
     struct sigaction old_sigsegv;
     stack_t          old_altstack;
