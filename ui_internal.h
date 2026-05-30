@@ -1,6 +1,10 @@
 #ifndef UI_INTERNAL_H
 #define UI_INTERNAL_H
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "ui.h"
 
 #include <stdbool.h>
