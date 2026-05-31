@@ -183,22 +183,42 @@ ui_io_submit_and_wait(ui_vCPU *v, struct io_uring_sqe *sqe)
     return cur->io_result;
 }
 
-/* All I/O operations use blocking POSIX calls for now.
- * Goroutines block their vCPU, but work-stealing distributes
- * goroutines across vCPUs so other vCPUs can make progress.
- * io_uring integration is planned but requires fixing the
- * submission/completion drain loop in ui_io_submit_and_wait. */
+/* ── I/O operations — io_uring path with POSIX fallback ── */
 
 ssize_t
 ui_Read(int fd, void *buf, size_t count)
 {
-    return read(fd, buf, count);
+    ui_vCPU *v = ui_this_vcpu;
+    if (!v || !v->current) return read(fd, buf, count);
+    if (ui_vcpu_ensure_ring(v) < 0) return read(fd, buf, count);
+
+    struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
+    if (!sqe) return read(fd, buf, count);
+
+    sqe->opcode = IORING_OP_READ;
+    sqe->fd = fd;
+    sqe->addr = (unsigned long)(uintptr_t)buf;
+    sqe->len = count;
+    sqe->off = -1;
+    return ui_io_submit_and_wait(v, sqe);
 }
 
 ssize_t
 ui_Write(int fd, const void *buf, size_t count)
 {
-    return write(fd, buf, count);
+    ui_vCPU *v = ui_this_vcpu;
+    if (!v || !v->current) return write(fd, buf, count);
+    if (ui_vcpu_ensure_ring(v) < 0) return write(fd, buf, count);
+
+    struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
+    if (!sqe) return write(fd, buf, count);
+
+    sqe->opcode = IORING_OP_WRITE;
+    sqe->fd = fd;
+    sqe->addr = (unsigned long)(uintptr_t)buf;
+    sqe->len = count;
+    sqe->off = -1;
+    return ui_io_submit_and_wait(v, sqe);
 }
 
 int
@@ -210,40 +230,104 @@ ui_Open(const char *pathname, int flags, ...)
     return open(pathname, flags, mode);
 }
 
-/* ── Socket operations ── */
-
 ssize_t
 ui_Recv(int fd, void *buf, size_t count, int flags)
 {
-    return recv(fd, buf, count, flags);
+    ui_vCPU *v = ui_this_vcpu;
+    if (!v || !v->current) return recv(fd, buf, count, flags);
+    if (ui_vcpu_ensure_ring(v) < 0) return recv(fd, buf, count, flags);
+
+    struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
+    if (!sqe) return recv(fd, buf, count, flags);
+
+    sqe->opcode = IORING_OP_RECV;
+    sqe->fd = fd;
+    sqe->addr = (unsigned long)(uintptr_t)buf;
+    sqe->len = count;
+    sqe->rw_flags = flags;
+    return ui_io_submit_and_wait(v, sqe);
 }
 
 ssize_t
 ui_Send(int fd, const void *buf, size_t count, int flags)
 {
-    return send(fd, buf, count, flags);
+    ui_vCPU *v = ui_this_vcpu;
+    if (!v || !v->current) return send(fd, buf, count, flags);
+    if (ui_vcpu_ensure_ring(v) < 0) return send(fd, buf, count, flags);
+
+    struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
+    if (!sqe) return send(fd, buf, count, flags);
+
+    sqe->opcode = IORING_OP_SEND;
+    sqe->fd = fd;
+    sqe->addr = (unsigned long)(uintptr_t)buf;
+    sqe->len = count;
+    sqe->rw_flags = flags;
+    return ui_io_submit_and_wait(v, sqe);
 }
 
 int
 ui_Connect(int fd, const struct sockaddr *addr, socklen_t addrlen)
 {
-    return connect(fd, addr, addrlen);
+    ui_vCPU *v = ui_this_vcpu;
+    if (!v || !v->current) return connect(fd, addr, addrlen);
+    if (ui_vcpu_ensure_ring(v) < 0) return connect(fd, addr, addrlen);
+
+    struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
+    if (!sqe) return connect(fd, addr, addrlen);
+
+    sqe->opcode = IORING_OP_CONNECT;
+    sqe->fd = fd;
+    sqe->addr = (unsigned long)(uintptr_t)addr;
+    sqe->off = addrlen;
+    return (int)ui_io_submit_and_wait(v, sqe);
 }
 
 int
 ui_Accept(int fd, struct sockaddr *addr, socklen_t *addrlen)
 {
-    return accept(fd, addr, addrlen);
+    ui_vCPU *v = ui_this_vcpu;
+    if (!v || !v->current) return accept(fd, addr, addrlen);
+    if (ui_vcpu_ensure_ring(v) < 0) return accept(fd, addr, addrlen);
+
+    struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
+    if (!sqe) return accept(fd, addr, addrlen);
+
+    sqe->opcode = IORING_OP_ACCEPT;
+    sqe->fd = fd;
+    sqe->addr = (unsigned long)(uintptr_t)addr;
+    sqe->off = (unsigned long)(uintptr_t)addrlen;
+    return (int)ui_io_submit_and_wait(v, sqe);
 }
 
 int
 ui_Close(int fd)
 {
-    return close(fd);
+    ui_vCPU *v = ui_this_vcpu;
+    if (!v || !v->current) return close(fd);
+    if (ui_vcpu_ensure_ring(v) < 0) return close(fd);
+
+    struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
+    if (!sqe) return close(fd);
+
+    sqe->opcode = IORING_OP_CLOSE;
+    sqe->fd = fd;
+    ssize_t ret = ui_io_submit_and_wait(v, sqe);
+    return (ret < 0) ? (int)ret : 0;
 }
 
 int
 ui_Shutdown(int fd, int how)
 {
-    return shutdown(fd, how);
+    ui_vCPU *v = ui_this_vcpu;
+    if (!v || !v->current) return shutdown(fd, how);
+    if (ui_vcpu_ensure_ring(v) < 0) return shutdown(fd, how);
+
+    struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
+    if (!sqe) return shutdown(fd, how);
+
+    sqe->opcode = IORING_OP_SHUTDOWN;
+    sqe->fd = fd;
+    sqe->rw_flags = (unsigned)how;
+    return (int)ui_io_submit_and_wait(v, sqe);
 }
