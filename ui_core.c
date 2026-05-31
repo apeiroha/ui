@@ -453,24 +453,23 @@ static void
 ui_sigsegv_handler(int sig, siginfo_t *info, void *ctx)
 {
     (void)sig; (void)ctx;
-    for (int i = 0; i < g_ui_sched.nvcpus; i++)
+
+    /* Only check the current vCPU — cross-vCPU access to v->current
+     * races with ui_schedule's v->current = NULL assignment (C8). */
+    ui_vCPU *v = ui_this_vcpu;
+    if (v && v->current && v->current->stack_base)
     {
-        ui_vCPU *v = &g_ui_sched.vcpus[i];
-        if (v->current && v->current->stack_base)
+        intptr_t base = (intptr_t)v->current->stack_base;
+        intptr_t top = base + (intptr_t)v->current->stack_reserve;
+        intptr_t fault = (intptr_t)info->si_addr;
+        if (fault >= base && fault < top)
         {
-            intptr_t base = (intptr_t)v->current->stack_base;
-            intptr_t top = base + (intptr_t)v->current->stack_reserve;
-            intptr_t fault = (intptr_t)info->si_addr;
-            if (fault >= base && fault < top)
-            {
-                int ret = ui_stack_grow(v->current, info->si_addr);
-                if (ret == 0) return;
-                if (ret == -2) {
-                    fprintf(stderr, "\nui stack overflow: exceeded 8MB limit\n"
-                            "  fault=%p\n", info->si_addr);
-                    _exit(1);
-                }
-                break;
+            int ret = ui_stack_grow(v->current, info->si_addr);
+            if (ret == 0) return;
+            if (ret == -2) {
+                static const char msg[] = "\nui stack overflow: exceeded 8MB limit\n";
+                write(2, msg, sizeof(msg) - 1);
+                _exit(1);
             }
         }
     }
@@ -719,16 +718,16 @@ ui_wakeup(ui_Goro *g)
 
     ui_vCPU *v_target = &g_ui_sched.vcpus[target];
 
-    /* Remove from sleepq if sleeping */
-    if (g->sleepq_idx >= 0)
-        ui_sleepq_remove(v_target, g);
-
     g->state = UI_READY;
 
-    /* Same-vCPU: insert directly into runq.
-     * Different vCPU: push to standbyq (avoids cross-vCPU runq race). */
+    /* Same-vCPU: remove from sleepq and insert directly into runq.
+     * Cross-vCPU: push to standbyq (avoids cross-vCPU runq race AND
+     * cross-vCPU sleepq access).  The target vCPU's standbyq drain
+     * will remove from the sleepq locally. */
     if (ui_get_vcpu_id() == target)
     {
+        if (g->sleepq_idx >= 0)
+            ui_sleepq_remove(v_target, g);
         ui_runq_insert(v_target, g);
     }
     else
