@@ -264,9 +264,9 @@ ui_steal_work(ui_vCPU *v)
         }
 
         int ok = 0;
-        if (count > 1)
+        if (count > 0)
         {
-            int steal_n = count / 2;
+            int steal_n = count > 1 ? count / 2 : 1;
             ui_Goro *stop = s;
             for (int i = 0; i < steal_n; i++) stop = stop->next;
 
