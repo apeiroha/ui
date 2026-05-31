@@ -582,25 +582,18 @@ ui_wakeup(ui_Goro *g)
 static void
 ui_vcpu_idle(ui_vCPU *v)
 {
-    /* Expire sleepq entries first */
     uint64_t now = ui_now_ms();
     ui_sleepq_expire(v, now);
+    if (!ui_runq_empty(v)) return;
+    if (ui_steal_work(v)) return;
 
-    if (!ui_runq_empty(v))
-        return;
-
-    /* Try work stealing before sleeping */
-    if (ui_steal_work(v))
-        return;
-
-    /* Calculate timeout until next sleepq entry */
+    /* Block on eventfd until timeout or wakeup */
     int timeout_ms = 100;
     if (v->sleepq_size > 0 && v->sleepq[0]->wakeup_time > now)
     {
         uint64_t delta = v->sleepq[0]->wakeup_time - now;
         timeout_ms = (int)(delta < 10000 ? delta : 10000);
     }
-
     struct pollfd pfd = { .fd = v->event_fd, .events = POLLIN };
     int ret = poll(&pfd, 1, timeout_ms);
     if (ret > 0 && (pfd.revents & POLLIN))

@@ -80,6 +80,7 @@ typedef struct
     struct io_uring_sqe *sq_sqes;
     unsigned        *cq_head, *cq_tail, *cq_ring_mask, *cq_ring_entries;
     struct io_uring_cqe *cq_cqes;
+    int              no_sq_array;  /* IORING_SETUP_NO_SQARRAY was enabled */
     void            *sched_rsp;
     ui_Goro         *current;
     /* Sleep queue (binary min-heap by wakeup_time) */
@@ -132,6 +133,8 @@ void          ui_sleepq_remove(ui_vCPU *v, ui_Goro *g);
 ui_Goro      *ui_sleepq_pop(ui_vCPU *v);
 int           ui_sleepq_expire(ui_vCPU *v, uint64_t now_ms);
 uint64_t      ui_now_ms(void);
+
+int           ui_vcpu_ensure_ring(ui_vCPU *v);
 
 /* ── Wait queue abstraction ── */
 
