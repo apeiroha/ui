@@ -28,11 +28,6 @@ ui_waitq_push(ui_WaitQ *q, ui_Goro *g)
     else
     {
         ui_Goro *last = q->head->wq_prev;
-        if (!last)
-        {
-            /* Corrupted waitq — skip push, caller will retry */
-            return;
-        }
         last->wq_next = g;
         g->wq_prev = last;
         g->wq_next = q->head;

@@ -12,6 +12,8 @@
 
 ui_Sched g_ui_sched;
 
+__thread ui_vCPU *ui_this_vcpu;
+
 void
 ui_runq_init(ui_vCPU *v)
 {
@@ -23,6 +25,12 @@ void
 ui_runq_insert(ui_vCPU *v, ui_Goro *g)
 {
     pthread_spin_lock(&v->runq_lock);
+    if (g->prev != NULL)
+    {
+        /* Already in a runq — skip (avoids double-insertion). */
+        pthread_spin_unlock(&v->runq_lock);
+        return;
+    }
     ui_Goro *s = &v->runq_sentinel;
     ui_Goro *last = s->prev;
     g->next = s;
@@ -68,10 +76,10 @@ ui_standbyq_init(ui_vCPU *v)
 void
 ui_standbyq_push(ui_vCPU *v, ui_Goro *g)
 {
-    g->wq_next = NULL;
+    g->prev = NULL;
     pthread_spin_lock(&v->standbyq_lock);
     if (v->standbyq_tail)
-        v->standbyq_tail->wq_next = g;
+        v->standbyq_tail->prev = g;
     else
         v->standbyq_head = g;
     v->standbyq_tail = g;
@@ -91,8 +99,8 @@ ui_drain_standbyq(ui_vCPU *v)
 
     while (head)
     {
-        ui_Goro *next = head->wq_next;
-        head->wq_next = NULL;
+        ui_Goro *next = head->prev;
+        head->prev = NULL;
         head->state = UI_READY;
         if (head->sleepq_idx >= 0)
             ui_sleepq_remove(v, head);
@@ -240,7 +248,11 @@ ui_steal_work(ui_vCPU *v)
 
         int count = 0;
         ui_Goro *s = &vic->runq_sentinel;
-        for (ui_Goro *p = s->next; p != s; p = p->next) count++;
+        for (ui_Goro *p = s->next; p && p != s; p = p->next)
+        {
+            if (!p->prev) break; /* corrupted list — safety */
+            count++;
+        }
 
         int ok = 0;
         if (count > 1)
@@ -771,6 +783,8 @@ static void *
 ui_vcpu_main(void *arg)
 {
     ui_vCPU *v = arg;
+    v->thread = pthread_self();
+    ui_this_vcpu = v;
     while (atomic_load(&v->running))
     {
         v->tick++;
