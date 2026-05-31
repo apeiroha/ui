@@ -69,6 +69,10 @@ typedef struct
     int              id;
     /* Sentinel for intrusive circular runq list */
     ui_Goro          runq_sentinel;
+    pthread_spinlock_t runq_lock;
+    /* Goroutine pool (reuse stacks, avoid mmap) */
+    ui_Goro         *goro_pool[16];
+    int              goro_pool_count;
     int              event_fd;
     int              ring_fd;
     unsigned        *sq_head, *sq_tail, *sq_ring_mask, *sq_ring_entries;

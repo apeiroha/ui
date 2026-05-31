@@ -21,21 +21,27 @@ ui_runq_init(ui_vCPU *v)
 void
 ui_runq_insert(ui_vCPU *v, ui_Goro *g)
 {
+    pthread_spin_lock(&v->runq_lock);
     ui_Goro *s = &v->runq_sentinel;
     ui_Goro *last = s->prev;
     g->next = s;
     g->prev = last;
     last->next = g;
     s->prev = g;
+    pthread_spin_unlock(&v->runq_lock);
 }
 
 void
 ui_runq_remove(ui_Goro *g)
 {
+    if (!g->prev && !g->next) return;
+    ui_vCPU *v = &g_ui_sched.vcpus[g->home_vcpu];
+    pthread_spin_lock(&v->runq_lock);
     g->prev->next = g->next;
     g->next->prev = g->prev;
     g->next = NULL;
     g->prev = NULL;
+    pthread_spin_unlock(&v->runq_lock);
 }
 
 int
@@ -155,6 +161,54 @@ ui_sleepq_expire(ui_vCPU *v, uint64_t now_ms)
     return count;
 }
 
+/* ── Work stealing ── */
+
+static int
+ui_steal_work(ui_vCPU *v)
+{
+    for (int attempt = 0; attempt < g_ui_sched.nvcpus * 2; attempt++)
+    {
+        int vid = rand() % g_ui_sched.nvcpus;
+        if (vid == v->id) continue;
+
+        ui_vCPU *vic = &g_ui_sched.vcpus[vid];
+        if (pthread_spin_trylock(&vic->runq_lock) != 0) continue;
+
+        int count = 0;
+        ui_Goro *s = &vic->runq_sentinel;
+        for (ui_Goro *p = s->next; p != s; p = p->next) count++;
+
+        int ok = 0;
+        if (count > 1)
+        {
+            int steal_n = count / 2;
+            ui_Goro *stop = s;
+            for (int i = 0; i < steal_n; i++) stop = stop->next;
+
+            ui_Goro *batch_start = s->next;
+            ui_Goro *batch_end = stop;
+            ui_Goro *batch_prev = batch_start->prev;
+
+            batch_prev->next = batch_end->next;
+            batch_end->next->prev = batch_prev;
+
+            s = &v->runq_sentinel;
+            batch_end->next = s;
+            batch_start->prev = s->prev;
+            s->prev->next = batch_start;
+            s->prev = batch_end;
+
+            for (ui_Goro *p = batch_start; p != s; p = p->next)
+                p->home_vcpu = v->id;
+            ok = 1;
+        }
+
+        pthread_spin_unlock(&vic->runq_lock);
+        if (ok) return 1;
+    }
+    return 0;
+}
+
 static ui_vCPU *
 ui_get_vcpu(void)
 {
@@ -226,11 +280,32 @@ ui_schedule(void)
                 cg->joiner = NULL;
             }
             ui_runq_remove(cg);
-            ui_stack_destroy(cg);
-            pthread_mutex_lock(&g_ui_sched.free_lock);
-            cg->wq_next = g_ui_sched.free_list;
-            g_ui_sched.free_list = cg;
-            pthread_mutex_unlock(&g_ui_sched.free_lock);
+            /* Recycle into per-vCPU pool or free */
+            ui_vCPU *cv = v;
+            if (cv->goro_pool_count < 16)
+            {
+                /* Reset fields but keep stack_base/reserve/committed/page_size */
+                void *sb = cg->stack_base;
+                size_t sr = cg->stack_reserve;
+                size_t sc = cg->stack_committed;
+                int    ps = cg->page_size;
+                memset(cg, 0, sizeof(ui_Goro));
+                cg->stack_base = sb;
+                cg->stack_reserve = sr;
+                cg->stack_committed = sc;
+                cg->page_size = ps;
+                cg->sleepq_idx = -1;
+                cv->goro_pool[cv->goro_pool_count] = cg;
+                cv->goro_pool_count++;
+            }
+            else
+            {
+                ui_stack_destroy(cg);
+                pthread_mutex_lock(&g_ui_sched.free_lock);
+                cg->wq_next = g_ui_sched.free_list;
+                g_ui_sched.free_list = cg;
+                pthread_mutex_unlock(&g_ui_sched.free_lock);
+            }
             atomic_fetch_sub(&g_ui_sched.active_count, 1);
         }
         else if (cg->state == UI_WAITING)
@@ -322,6 +397,7 @@ ui_Init(void)
         ui_vCPU *v = &g_ui_sched.vcpus[i];
         v->id = i;
         v->event_fd = eventfd(0, EFD_NONBLOCK);
+        pthread_spin_init(&v->runq_lock, PTHREAD_PROCESS_PRIVATE);
         ui_runq_init(v);
         atomic_store(&v->running, 1);
     }
@@ -363,15 +439,42 @@ ui_goro_init(ui_Goro *g)
 static ui_Goro *
 ui_goro_alloc(ui_Func0 entry, void *arg, int stack_size)
 {
-    ui_Goro *g;
-    pthread_mutex_lock(&g_ui_sched.free_lock);
-    g = g_ui_sched.free_list;
-    if (g) g_ui_sched.free_list = g->wq_next;
-    pthread_mutex_unlock(&g_ui_sched.free_lock);
-    if (!g) { g = calloc(1, sizeof(ui_Goro)); if (!g) return NULL; g->sleepq_idx = -1; }
+    ui_vCPU *v = ui_get_vcpu();
+    ui_Goro *g = NULL;
+
+    /* Try per-vCPU pool first */
+    if (v && v->goro_pool_count > 0)
+    {
+        v->goro_pool_count--;
+        g = v->goro_pool[v->goro_pool_count];
+        v->goro_pool[v->goro_pool_count] = NULL;
+    }
+
+    /* Fall back to global free list */
+    if (!g)
+    {
+        pthread_mutex_lock(&g_ui_sched.free_lock);
+        g = g_ui_sched.free_list;
+        if (g) g_ui_sched.free_list = g->wq_next;
+        pthread_mutex_unlock(&g_ui_sched.free_lock);
+    }
+
+    /* Allocate new if nothing available */
+    if (!g)
+    {
+        g = calloc(1, sizeof(ui_Goro));
+        if (!g) return NULL;
+    }
+
     g->entry = entry;
     g->arg = arg;
-    if (ui_stack_init(g, stack_size) < 0) { free(g); return NULL; }
+
+    /* Only initialize stack if not pooled (pooled goros keep their stack) */
+    if (!g->stack_base)
+    {
+        if (ui_stack_init(g, stack_size) < 0) { free(g); return NULL; }
+    }
+
     ui_goro_init(g);
     g->first_run = 1;
     g->sleepq_idx = -1;
@@ -484,6 +587,10 @@ ui_vcpu_idle(ui_vCPU *v)
     ui_sleepq_expire(v, now);
 
     if (!ui_runq_empty(v))
+        return;
+
+    /* Try work stealing before sleeping */
+    if (ui_steal_work(v))
         return;
 
     /* Calculate timeout until next sleepq entry */
