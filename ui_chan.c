@@ -89,8 +89,7 @@ ui_ChanSend(uint64_t ch, const void *val)
             g->state = UI_WAITING;
             ui_waitq_push(&c->send_wait, g);
             pthread_spin_unlock(&c->lock);
-            if (g->state == UI_WAITING)
-                ui_switch(&g->rsp, v->sched_rsp);
+            ui_switch(&g->rsp, v->sched_rsp);
             if (c->closed) return;
         }
     }
@@ -131,8 +130,7 @@ ui_ChanRecv(uint64_t ch, void *val)
             g->state = UI_WAITING;
             ui_waitq_push(&c->recv_wait, g);
             pthread_spin_unlock(&c->lock);
-            if (g->state == UI_WAITING)
-                ui_switch(&g->rsp, v->sched_rsp);
+            ui_switch(&g->rsp, v->sched_rsp);
         }
     }
 }
@@ -167,12 +165,6 @@ ui_ChanTryRecv(uint64_t ch, void *val)
     if (!c) return false;
 
     pthread_spin_lock(&c->lock);
-    if (c->closed)
-    {
-        pthread_spin_unlock(&c->lock);
-        if (val) memset(val, 0, c->elem_size);
-        return true;
-    }
 
     if (c->count > 0)
     {
@@ -185,6 +177,14 @@ ui_ChanTryRecv(uint64_t ch, void *val)
         pthread_spin_unlock(&c->lock);
         return true;
     }
+
+    if (c->closed)
+    {
+        pthread_spin_unlock(&c->lock);
+        if (val) memset(val, 0, c->elem_size);
+        return true;
+    }
+
     pthread_spin_unlock(&c->lock);
     return false;
 }

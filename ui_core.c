@@ -169,16 +169,17 @@ sleepq_sift_down(ui_vCPU *v, int idx)
     }
 }
 
-void
+int
 ui_sleepq_push(ui_vCPU *v, ui_Goro *g, uint64_t deadline_ms)
 {
     if (v->sleepq_size >= 256)
-        return;
+        return -1;
     g->wakeup_time = deadline_ms;
     g->sleepq_idx = v->sleepq_size;
     v->sleepq[v->sleepq_size] = g;
     v->sleepq_size++;
     sleepq_sift_up(v, g->sleepq_idx);
+    return 0;
 }
 
 void
@@ -326,6 +327,10 @@ ui_schedule(void)
 
     /* Drain standbyq (process cross-vCPU wakers/steals) */
     ui_drain_standbyq(v);
+
+    /* Expire sleepers so they become runnable (needed here, not just in idle
+     * loop, to avoid deadlock when sleepq is full and no goroutine goes idle). */
+    ui_sleepq_expire(v, ui_now_ms());
 
     ui_Goro *g = NULL;
     ui_Goro *cg = v->current;
@@ -688,11 +693,20 @@ ui_Sleep(unsigned int ms)
     if (!v || !v->current) return;
 
     uint64_t deadline = ui_now_ms() + ms;
-    v->current->state = UI_WAITING;
-    ui_sleepq_push(v, v->current, deadline);
+    ui_Goro *g = v->current;
 
+    /* If sleepq is full, yield and let the scheduler drain it, then retry */
+    while (ui_sleepq_push(v, g, deadline) != 0)
+    {
+        g->state = UI_READY;
+        ui_switch(&g->rsp, v->sched_rsp);
+        /* Woken up — retry sleep */
+        deadline = ui_now_ms() + ms;
+    }
+
+    g->state = UI_WAITING;
     /* Switch to scheduler (cleanup will remove from runq) */
-    ui_switch(&v->current->rsp, v->sched_rsp);
+    ui_switch(&g->rsp, v->sched_rsp);
 }
 
 void

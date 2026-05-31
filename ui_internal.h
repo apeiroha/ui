@@ -143,7 +143,7 @@ int           ui_runq_empty(ui_vCPU *v);
 void          ui_standbyq_init(ui_vCPU *v);
 void          ui_standbyq_push(ui_vCPU *v, ui_Goro *g);
 
-void          ui_sleepq_push(ui_vCPU *v, ui_Goro *g, uint64_t deadline_ms);
+int           ui_sleepq_push(ui_vCPU *v, ui_Goro *g, uint64_t deadline_ms);
 void          ui_sleepq_remove(ui_vCPU *v, ui_Goro *g);
 ui_Goro      *ui_sleepq_pop(ui_vCPU *v);
 int           ui_sleepq_expire(ui_vCPU *v, uint64_t now_ms);
