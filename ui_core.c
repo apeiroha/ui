@@ -281,20 +281,16 @@ ui_schedule(void)
                 cg->joiner = NULL;
             }
             ui_runq_remove(cg);
-            /* Recycle into per-vCPU pool or free */
             ui_vCPU *cv = v;
             if (cv->goro_pool_count < 16)
             {
-                /* Reset fields but keep stack_base/reserve/committed/page_size */
                 void *sb = cg->stack_base;
                 size_t sr = cg->stack_reserve;
                 size_t sc = cg->stack_committed;
                 int    ps = cg->page_size;
                 memset(cg, 0, sizeof(ui_Goro));
-                cg->stack_base = sb;
-                cg->stack_reserve = sr;
-                cg->stack_committed = sc;
-                cg->page_size = ps;
+                cg->stack_base = sb; cg->stack_reserve = sr;
+                cg->stack_committed = sc; cg->page_size = ps;
                 cg->sleepq_idx = -1;
                 cv->goro_pool[cv->goro_pool_count] = cg;
                 cv->goro_pool_count++;
@@ -313,6 +309,7 @@ ui_schedule(void)
             ui_runq_remove(cg);
     }
 }
+
 
 static void
 ui_sigsegv_handler(int sig, siginfo_t *info, void *ctx)
@@ -488,7 +485,6 @@ ui_goro_exit(void)
     ui_vCPU *v = ui_get_vcpu();
     if (!v || !v->current) return;
     v->current->state = UI_DEAD;
-    /* Don't clear v->current — scheduler needs it for cleanup */
     ui_switch(&v->current->rsp, v->sched_rsp);
 }
 

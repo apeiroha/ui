@@ -182,9 +182,24 @@ ui_io_submit_and_wait(ui_vCPU *v, struct io_uring_sqe *sqe)
 
     if (cur->state == UI_WAITING)
     {
-        v->current = NULL;
-        ui_schedule();
+        /* io_uring completion not yet available.
+         * Use ui_Yield to properly save g->rsp and hand control
+         * to the scheduler. The idle loop will drain CQEs and
+         * insert us back into the runq when the CQE arrives.
+         * ui_Yield sets state=READY, so we compensate.
+         * This may schedule us a few times before the CQE arrives,
+         * but it correctly preserves the goroutine's stack. */
+        for (;;)
+        {
+            cur->state = UI_READY;
+            ui_Yield();
+            cur->state = UI_WAITING;
+            ui_uring_drain(v);
+            if (cur->state != UI_WAITING)
+                break;
+        }
     }
+
 
     return cur->io_result;
 }
