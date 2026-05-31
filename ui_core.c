@@ -35,9 +35,13 @@ ui_runq_insert(ui_vCPU *v, ui_Goro *g)
 void
 ui_runq_remove(ui_Goro *g)
 {
-    if (!g->prev && !g->next) return;
     ui_vCPU *v = &g_ui_sched.vcpus[g->home_vcpu];
     pthread_spin_lock(&v->runq_lock);
+    if (!g->prev || !g->next)
+    {
+        pthread_spin_unlock(&v->runq_lock);
+        return;
+    }
     g->prev->next = g->next;
     g->next->prev = g->prev;
     g->next = NULL;
@@ -162,6 +166,19 @@ ui_sleepq_expire(ui_vCPU *v, uint64_t now_ms)
     return count;
 }
 
+/* ── Per-vCPU xorshift32 (replaces non-thread-safe rand()) ── */
+
+static uint32_t
+ui_xorshift32(uint32_t *state)
+{
+    uint32_t x = *state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+    return x;
+}
+
 /* ── Work stealing ── */
 
 static int
@@ -169,7 +186,7 @@ ui_steal_work(ui_vCPU *v)
 {
     for (int attempt = 0; attempt < g_ui_sched.nvcpus * 2; attempt++)
     {
-        int vid = rand() % g_ui_sched.nvcpus;
+        int vid = (int)(ui_xorshift32(&v->rng_state) % (uint32_t)g_ui_sched.nvcpus);
         if (vid == v->id) continue;
 
         ui_vCPU *vic = &g_ui_sched.vcpus[vid];
@@ -398,6 +415,7 @@ ui_Init(void)
         pthread_spin_init(&v->runq_lock, PTHREAD_PROCESS_PRIVATE);
         ui_runq_init(v);
         atomic_store(&v->running, 1);
+        v->rng_state = (uint32_t)(i * 0x9E3779B9 + 1);
     }
     g_ui_sched.initialized = 1;
     return 0;

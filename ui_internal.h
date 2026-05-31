@@ -90,6 +90,7 @@ typedef struct
     int              sleepq_size;
     atomic_int       running;
     long             tick;
+    uint32_t         rng_state;
 } ui_vCPU;
 
 typedef struct

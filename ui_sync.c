@@ -70,18 +70,23 @@ ui_MutexLock(uint64_t mh)
             spin_unlock(&m->splock);
             return;
         }
-        /* Under spinlock: push to waitq, then release and sleep */
-        if (ui_get_vcpu() && ui_get_vcpu()->current)
+        /* Under spinlock: set WAITING, push to waitq, then release and sleep */
         {
-            ui_waitq_push(&m->waitq, ui_get_vcpu()->current);
-            spin_unlock(&m->splock);
-            ui_wait_g(ui_get_vcpu()->current);
-            /* Woken up — retry */
-        }
-        else
-        {
-            spin_unlock(&m->splock);
-            return;
+            ui_Goro *g = ui_get_vcpu() ? ui_get_vcpu()->current : NULL;
+            if (g)
+            {
+                g->state = UI_WAITING;
+                ui_waitq_push(&m->waitq, g);
+                spin_unlock(&m->splock);
+                if (g->state == UI_WAITING)
+                    ui_switch(&g->rsp, ui_get_vcpu()->sched_rsp);
+                /* Woken up — retry */
+            }
+            else
+            {
+                spin_unlock(&m->splock);
+                return;
+            }
         }
     }
 }
@@ -149,8 +154,11 @@ ui_CondWait(uint64_t ch, uint64_t mh)
     {
         ui_vCPU *v = ui_get_vcpu();
         if (!v || !v->current) return;
-        ui_waitq_push(&c->waitq, v->current);
-        ui_wait_g(v->current);
+        ui_Goro *g = v->current;
+        g->state = UI_WAITING;
+        ui_waitq_push(&c->waitq, g);
+        if (g->state == UI_WAITING)
+            ui_switch(&g->rsp, v->sched_rsp);
     }
 
     /* Re-acquire mutex */
