@@ -115,8 +115,8 @@ typedef struct
 
 extern ui_Sched g_ui_sched;
 
-extern __thread ui_Goro *ui_current_goro;
-extern __thread ui_vCPU *ui_this_vcpu;
+extern __thread __attribute__((tls_model("initial-exec"))) ui_Goro *ui_current_goro;
+extern __thread __attribute__((tls_model("initial-exec"))) ui_vCPU *ui_this_vcpu;
 
 extern void   ui_switch(void **from_rsp, void *to_rsp);
 extern void   ui_switch_defer(void **from_rsp, void *to_rsp,

@@ -12,7 +12,7 @@
 
 ui_Sched g_ui_sched;
 
-__thread ui_vCPU *ui_this_vcpu;
+__thread __attribute__((tls_model("initial-exec"))) ui_vCPU *ui_this_vcpu;
 
 void
 ui_runq_init(ui_vCPU *v)
@@ -21,14 +21,24 @@ ui_runq_init(ui_vCPU *v)
     v->runq_sentinel.prev = &v->runq_sentinel;
 }
 
+/* Insert into runq (caller must hold runq_lock) */
+static void
+ui_runq_insert_locked(ui_vCPU *v, ui_Goro *g);
+
 void
 ui_runq_insert(ui_vCPU *v, ui_Goro *g)
 {
     pthread_spin_lock(&v->runq_lock);
+    ui_runq_insert_locked(v, g);
+    pthread_spin_unlock(&v->runq_lock);
+}
+
+/* Insert into runq (caller must hold runq_lock) */
+static void
+ui_runq_insert_locked(ui_vCPU *v, ui_Goro *g)
+{
     if (g->prev != NULL)
     {
-        /* Already in a runq — skip (avoids double-insertion). */
-        pthread_spin_unlock(&v->runq_lock);
         return;
     }
     ui_Goro *s = &v->runq_sentinel;
@@ -37,7 +47,6 @@ ui_runq_insert(ui_vCPU *v, ui_Goro *g)
     g->prev = last;
     last->next = g;
     s->prev = g;
-    pthread_spin_unlock(&v->runq_lock);
 }
 
 void
@@ -300,25 +309,13 @@ ui_steal_work(ui_vCPU *v)
 static ui_vCPU *
 ui_get_vcpu(void)
 {
-    pthread_t self = pthread_self();
-    for (int i = 0; i < g_ui_sched.nvcpus; i++)
-    {
-        if (pthread_equal(g_ui_sched.vcpus[i].thread, self))
-            return &g_ui_sched.vcpus[i];
-    }
-    return NULL;
+    return ui_this_vcpu;
 }
 
 static int
 ui_get_vcpu_id(void)
 {
-    pthread_t self = pthread_self();
-    for (int i = 0; i < g_ui_sched.nvcpus; i++)
-    {
-        if (pthread_equal(g_ui_sched.vcpus[i].thread, self))
-            return i;
-    }
-    return 0;
+    return ui_this_vcpu ? ui_this_vcpu->id : 0;
 }
 
 void
@@ -327,40 +324,37 @@ ui_schedule(void)
     ui_vCPU *v = ui_get_vcpu();
     if (!v) return;
 
-    /* Drain standbyq: process goroutines pushed from other vCPUs */
+    /* Drain standbyq (process cross-vCPU wakers/steals) */
     ui_drain_standbyq(v);
 
     ui_Goro *g = NULL;
     ui_Goro *cg = v->current;
     v->current = NULL;
 
-    /* Round-robin: if the previous goroutine yielded with READY,
-     * re-insert it at the tail of the runq under the lock. */
-    if (cg && cg->state == UI_READY)
-    {
-        pthread_spin_lock(&v->runq_lock);
-        /* cg was removed from the runq when it was last scheduled.
-         * Re-insert at tail. */
-        cg->state = UI_RUNNING; /* temporarily mark for insertion */
-        ui_runq_insert(v, cg);
-        cg->state = UI_READY;
-        pthread_spin_unlock(&v->runq_lock);
-    }
-
-    /* Pick next goroutine from runq (under lock).  This eliminates the
-     * stale-sentinel race with work stealing. */
+    /* Single lock region: re-insert READY goroutine + pick next */
     pthread_spin_lock(&v->runq_lock);
+
+    if (cg && cg->state == UI_READY)
+        ui_runq_insert_locked(v, cg);
+
     g = v->runq_sentinel.next;
     if (g != &v->runq_sentinel && g->prev && g->next)
     {
-        /* Remove from runq */
         g->prev->next = g->next;
         g->next->prev = g->prev;
         g->next = NULL;
         g->prev = NULL;
-        pthread_spin_unlock(&v->runq_lock);
+    }
+    else
+    {
+        g = NULL;
+    }
 
-        /* Clean up prev goroutine (DEAD or WAITING) */
+    pthread_spin_unlock(&v->runq_lock);
+
+    /* Outside lock: cleanup prev goroutine + run next */
+    if (g)
+    {
         if (cg)
         {
             if (cg->state == UI_DEAD)
@@ -395,13 +389,7 @@ ui_schedule(void)
                 }
                 atomic_fetch_sub(&g_ui_sched.active_count, 1);
             }
-            else if (cg->state == UI_WAITING)
-            {
-                /* Blocking goroutine was removed from runq
-                 * by the blocking code path before yield.
-                 * Nothing to clean up. */
-            }
-            /* UI_READY was already re-inserted above. */
+            /* WAITING: already removed from runq by blocking path */
         }
 
         g->state = UI_RUNNING;
@@ -416,9 +404,7 @@ ui_schedule(void)
     }
     else
     {
-        pthread_spin_unlock(&v->runq_lock);
-
-        /* No goroutine to run — clean up prev if DEAD/WAITING */
+        /* No goroutine to run */
         if (cg)
         {
             if (cg->state == UI_DEAD)
@@ -452,10 +438,6 @@ ui_schedule(void)
                     pthread_mutex_unlock(&g_ui_sched.free_lock);
                 }
                 atomic_fetch_sub(&g_ui_sched.active_count, 1);
-            }
-            else if (cg->state == UI_WAITING)
-            {
-                /* Already removed from runq by blocking code path. */
             }
         }
     }
@@ -779,7 +761,7 @@ ui_vcpu_idle(ui_vCPU *v)
     { uint64_t val; read(v->event_fd, &val, sizeof(val)); }
 }
 
-static void *
+static void * __attribute__((noinline))
 ui_vcpu_main(void *arg)
 {
     ui_vCPU *v = arg;
@@ -799,20 +781,28 @@ ui_vcpu_main(void *arg)
     return NULL;
 }
 
-void
+void __attribute__((noinline))
 ui_Run(void)
 {
     if (g_ui_sched.nvcpus == 0) return;
-    ui_vCPU *main_v = &g_ui_sched.vcpus[0];
+    /* Use local copies to prevent compiler optimization bugs */
+    ui_vCPU *vcpus = g_ui_sched.vcpus;
+    int nvcpus = g_ui_sched.nvcpus;
+    ui_vCPU *main_v = &vcpus[0];
     main_v->thread = pthread_self();
-    for (int i = 1; i < g_ui_sched.nvcpus; i++)
-        pthread_create(&g_ui_sched.vcpus[i].thread, NULL, ui_vcpu_main, &g_ui_sched.vcpus[i]);
-    ui_vcpu_main(main_v);
-    for (int i = 1; i < g_ui_sched.nvcpus; i++)
+    ui_this_vcpu = main_v;  /* main thread also needs the vCPU pointer */
+    for (int i = 1; i < nvcpus; i++)
     {
-        atomic_store(&g_ui_sched.vcpus[i].running, 0);
+        /* Store arg explicitly to help the compiler */
+        void *arg = &vcpus[i];
+        pthread_create(&vcpus[i].thread, NULL, ui_vcpu_main, arg);
+    }
+    ui_vcpu_main(main_v);
+    for (int i = 1; i < nvcpus; i++)
+    {
+        atomic_store(&vcpus[i].running, 0);
         uint64_t val = 1;
-        write(g_ui_sched.vcpus[i].event_fd, &val, sizeof(val));
-        pthread_join(g_ui_sched.vcpus[i].thread, NULL);
+        write(vcpus[i].event_fd, &val, sizeof(val));
+        pthread_join(vcpus[i].thread, NULL);
     }
 }
