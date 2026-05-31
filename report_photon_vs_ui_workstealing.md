@@ -124,3 +124,43 @@ thread* ws_scan_q(...) {
 1. 加 `standbyq`：work-stealing 和 waker 跨 vCPU 插入都走 standbyq，不直接接触 target runq
 2. 换 `asymmetric_spinLock`：前台用普通 store（无 CAS），后台用非阻塞 CAS
 3. 每线程加独立 spinlock：work-stealing 逐个锁定线程，而非依赖全局 runq_lock
+
+## 2026-05-31 更新: 最终根因
+
+### 真正的根因不是 standbyq 或 runq 锁
+
+经过多轮调试，最终的 crash 根因是：
+
+**`ui_vcpu_main` 没有设置 `v->thread`**
+
+`ui_get_vcpu()` 通过扫描 `g_ui_sched.vcpus[]` 并调用 `pthread_equal()` 来定位当前 vCPU。但 `v->thread` 只在 `ui_Run` 中为 **vCPU 0** 设置，`pthread_create` 创建的其他 vCPU 线程的 `v->thread` 一直保持 0（`calloc` 初始化值）。
+
+后果：
+- 非 vCPU 0 的线程调用 `ui_get_vcpu()` → 找不到匹配 → **返回 NULL**
+- goroutine 在这些 vCPU 上无法 yield、无法 block、无法 sleep
+- `ui_goro_exit()` → `ui_get_vcpu()` 返回 NULL → `v->sched_rsp` 尚未初始化 → `ui_switch` 加载 NULL RSP → **SIGSEGV**
+- `ui_get_vcpu_id()` 返回 0（默认值）→ `ui_runq_remove()` 使用错误 vCPU 的锁 → runq 链表损坏
+
+### 修复
+
+```c
+static void *ui_vcpu_main(void *arg) {
+    ui_vCPU *v = arg;
+    v->thread = pthread_self();   // ← 关键：设置 thread ID
+    ui_this_vcpu = v;             // ← __thread 变量实现 O(1) 查找
+    ...
+}
+```
+
+加上 `__thread ui_vCPU *ui_this_vcpu` 后，所有 vCPU 查找变为 O(1) 的 TLS 读取。
+
+### 关于 Photon
+
+Photon **没有这个问题**是因为它在 `vcpu_t` 的构造函数中立即设置 `thread_id`：
+```cpp
+vcpu->thread_id = pthread_self();
+```
+
+(见 `thread/thread.cpp` 中 vCPU 初始化代码)
+
+UI 的 `ui_Init` 无法设置 vCPU 线程的 ID（因为 `pthread_create` 还没调用），而在 `ui_Run` 中只设置了 vCPU 0。Photon 的工作池初始化器会为每个 worker 线程设置 `thread_id`，包括主线程。
