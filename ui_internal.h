@@ -104,6 +104,8 @@ extern ui_Sched g_ui_sched;
 extern __thread ui_Goro *ui_current_goro;
 
 extern void   ui_switch(void **from_rsp, void *to_rsp);
+extern void   ui_switch_defer(void **from_rsp, void *to_rsp,
+                              void (*defer_fn)(void*), void *defer_arg);
 extern void   ui_first_switch(void **sched_rsp_ptr, void *to_rsp);
 extern void   ui_trampoline(void);
 

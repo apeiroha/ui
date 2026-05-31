@@ -3,16 +3,29 @@
 #include <stdlib.h>
 #include <string.h>
 
-typedef struct
+/* ── Ticket spinlock ── */
+
+static void
+spin_lock(atomic_int *l)
 {
-    int      locked;
-    ui_WaitQ waitq;
-} ui_mutex;
+    while (atomic_exchange(l, 1))
+        __builtin_ia32_pause();
+}
+
+static void
+spin_unlock(atomic_int *l)
+{
+    atomic_store(l, 0);
+}
+
+/* ── Mutex ── */
 
 typedef struct
 {
-    ui_WaitQ waitq;
-} ui_cond;
+    atomic_int splock;
+    int         locked;
+    ui_WaitQ    waitq;
+} ui_mutex;
 
 static ui_vCPU *
 ui_get_vcpu(void)
@@ -27,7 +40,7 @@ ui_get_vcpu(void)
 }
 
 static void
-ui_wait(ui_Goro *g)
+ui_wait_g(ui_Goro *g)
 {
     g->state = UI_WAITING;
     ui_vCPU *v = ui_get_vcpu();
@@ -50,16 +63,25 @@ ui_MutexLock(uint64_t mh)
 
     for (;;)
     {
+        spin_lock(&m->splock);
         if (!m->locked)
         {
             m->locked = 1;
+            spin_unlock(&m->splock);
             return;
         }
+        /* Under spinlock: push to waitq, then release and sleep */
+        if (ui_get_vcpu() && ui_get_vcpu()->current)
         {
-            ui_vCPU *v = ui_get_vcpu();
-            if (!v || !v->current) return;
-            ui_waitq_push(&m->waitq, v->current);
-            ui_wait(v->current);
+            ui_waitq_push(&m->waitq, ui_get_vcpu()->current);
+            spin_unlock(&m->splock);
+            ui_wait_g(ui_get_vcpu()->current);
+            /* Woken up — retry */
+        }
+        else
+        {
+            spin_unlock(&m->splock);
+            return;
         }
     }
 }
@@ -69,7 +91,9 @@ ui_MutexTryLock(uint64_t mh)
 {
     ui_mutex *m = (ui_mutex *)(uintptr_t)mh;
     if (!m) return false;
-    if (!m->locked) { m->locked = 1; return true; }
+    spin_lock(&m->splock);
+    if (!m->locked) { m->locked = 1; spin_unlock(&m->splock); return true; }
+    spin_unlock(&m->splock);
     return false;
 }
 
@@ -78,10 +102,13 @@ ui_MutexUnlock(uint64_t mh)
 {
     ui_mutex *m = (ui_mutex *)(uintptr_t)mh;
     if (!m) return;
+
+    spin_lock(&m->splock);
     if (ui_waitq_empty(&m->waitq))
         m->locked = 0;
     else
         ui_waitq_wake_one(&m->waitq);
+    spin_unlock(&m->splock);
 }
 
 void
@@ -89,6 +116,13 @@ ui_MutexFree(uint64_t mh)
 {
     free((void *)(uintptr_t)mh);
 }
+
+/* ── Condition variable ── */
+
+typedef struct
+{
+    ui_WaitQ waitq;
+} ui_cond;
 
 uint64_t
 ui_CondNew(void)
@@ -105,35 +139,24 @@ ui_CondWait(uint64_t ch, uint64_t mh)
     ui_mutex *m = (ui_mutex *)(uintptr_t)mh;
     if (!c || !m) return;
 
-    /* Release mutex */
+    /* Release mutex (under its spinlock to prevent race) */
+    spin_lock(&m->splock);
     if (ui_waitq_empty(&m->waitq))
         m->locked = 0;
     else
         ui_waitq_wake_one(&m->waitq);
+    spin_unlock(&m->splock);
 
     /* Block on cond */
     {
         ui_vCPU *v = ui_get_vcpu();
         if (!v || !v->current) return;
         ui_waitq_push(&c->waitq, v->current);
-        ui_wait(v->current);
+        ui_wait_g(v->current);
     }
 
     /* Re-acquire mutex */
-    for (;;)
-    {
-        if (!m->locked)
-        {
-            m->locked = 1;
-            return;
-        }
-        {
-            ui_vCPU *v = ui_get_vcpu();
-            if (!v || !v->current) return;
-            ui_waitq_push(&m->waitq, v->current);
-            ui_wait(v->current);
-        }
-    }
+    ui_MutexLock(mh);
 }
 
 void
