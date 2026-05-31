@@ -7,6 +7,7 @@
 #include <poll.h>
 #include <sys/eventfd.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #include <time.h>
 
 ui_Sched g_ui_sched;
@@ -586,6 +587,25 @@ ui_vcpu_idle(ui_vCPU *v)
     ui_sleepq_expire(v, now);
     if (!ui_runq_empty(v)) return;
     if (ui_steal_work(v)) return;
+
+        /* Drain any pending io_uring completions */
+        if (v->ring_fd > 0) {
+            unsigned ch = *v->cq_head, ct = *v->cq_tail, cm = *v->cq_ring_mask;
+            while (ch != ct) {
+                struct io_uring_cqe *cqe = &v->cq_cqes[ch & cm];
+                if (cqe->user_data != 0) {
+                    ui_Goro *g = (ui_Goro *)(uintptr_t)cqe->user_data;
+                    g->io_result = cqe->res;
+                    g->state = UI_READY;
+                    ui_runq_insert(v, g);
+                    v->uring_pending--;
+                }
+                ch++;
+            }
+            *v->cq_head = ch;
+            __sync_synchronize();
+            if (!ui_runq_empty(v)) return;
+        }
 
     /* Block on eventfd until timeout or wakeup */
     int timeout_ms = 100;

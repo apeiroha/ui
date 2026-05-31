@@ -15,6 +15,7 @@
 #include <time.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <linux/io_uring.h>
 
 #define UI_PAGE_SIZE        4096
 #define UI_STACK_RESERVE    (8 * 1024 * 1024)
@@ -81,6 +82,7 @@ typedef struct
     unsigned        *cq_head, *cq_tail, *cq_ring_mask, *cq_ring_entries;
     struct io_uring_cqe *cq_cqes;
     int              no_sq_array;  /* IORING_SETUP_NO_SQARRAY was enabled */
+    int              uring_pending;
     void            *sched_rsp;
     ui_Goro         *current;
     /* Sleep queue (binary min-heap by wakeup_time) */

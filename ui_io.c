@@ -134,6 +134,9 @@ ui_uring_submit(ui_vCPU *v)
     /* Advance tail: kernel is now allowed to see and consume this SQE */
     *v->sq_tail = tail + 1;
 
+    /* Track pending requests */
+    v->uring_pending++;
+
     /* Submit via single syscall */
     ui_uring_enter(v->ring_fd, 1, 0, 0);
 }
@@ -155,6 +158,7 @@ ui_uring_drain(ui_vCPU *v)
             g->io_result = cqe->res;
             g->state = UI_READY;
             ui_runq_insert(v, g);
+            v->uring_pending--;
         }
         head++;
     }

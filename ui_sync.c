@@ -104,9 +104,8 @@ ui_MutexUnlock(uint64_t mh)
     if (!m) return;
 
     spin_lock(&m->splock);
-    if (ui_waitq_empty(&m->waitq))
-        m->locked = 0;
-    else
+    m->locked = 0;
+    if (!ui_waitq_empty(&m->waitq))
         ui_waitq_wake_one(&m->waitq);
     spin_unlock(&m->splock);
 }
@@ -141,9 +140,8 @@ ui_CondWait(uint64_t ch, uint64_t mh)
 
     /* Release mutex (under its spinlock to prevent race) */
     spin_lock(&m->splock);
-    if (ui_waitq_empty(&m->waitq))
-        m->locked = 0;
-    else
+    m->locked = 0;
+    if (!ui_waitq_empty(&m->waitq))
         ui_waitq_wake_one(&m->waitq);
     spin_unlock(&m->splock);
 
