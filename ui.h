@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
+#include <sys/socket.h>
 
 typedef void (*ui_Func0)(void);
 typedef void (*ui_Func1)(uintptr_t);
@@ -48,5 +49,12 @@ void     ui_CondFree(uint64_t c);
 ssize_t  ui_Read(int fd, void *buf, size_t count);
 ssize_t  ui_Write(int fd, const void *buf, size_t count);
 int      ui_Open(const char *pathname, int flags, ...);
+
+ssize_t  ui_Recv(int fd, void *buf, size_t count, int flags);
+ssize_t  ui_Send(int fd, const void *buf, size_t count, int flags);
+int      ui_Connect(int fd, const struct sockaddr *addr, socklen_t addrlen);
+int      ui_Accept(int fd, struct sockaddr *addr, socklen_t *addrlen);
+int      ui_Close(int fd);
+int      ui_Shutdown(int fd, int how);
 
 #endif

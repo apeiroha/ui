@@ -1,6 +1,7 @@
 #include "ui_internal.h"
 
 #include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -25,7 +26,7 @@ ui_uring_setup(unsigned entries, struct io_uring_params *p)
     return (int)syscall(__NR_io_uring_setup, entries, p);
 }
 
-static int
+int
 ui_uring_enter(int ring_fd, unsigned to_submit, unsigned min_complete,
                unsigned flags)
 {
@@ -41,20 +42,9 @@ ui_vcpu_ensure_ring(ui_vCPU *v)
 
     struct io_uring_params p;
     memset(&p, 0, sizeof(p));
-    p.flags = IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER
-            | IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_NO_SQARRAY;
+    p.flags = 0;
 
     v->ring_fd = ui_uring_setup(UI_URING_ENTRIES, &p);
-    if (v->ring_fd < 0)
-    {
-        p.flags = IORING_SETUP_COOP_TASKRUN | IORING_SETUP_NO_SQARRAY;
-        v->ring_fd = ui_uring_setup(UI_URING_ENTRIES, &p);
-    }
-    if (v->ring_fd < 0)
-    {
-        p.flags = IORING_SETUP_COOP_TASKRUN;
-        v->ring_fd = ui_uring_setup(UI_URING_ENTRIES, &p);
-    }
     if (v->ring_fd < 0)
     {
         p.flags = 0;
@@ -62,6 +52,8 @@ ui_vcpu_ensure_ring(ui_vCPU *v)
     }
     if (v->ring_fd < 0)
         return -1;
+
+    v->no_sq_array = 0;
 
     v->no_sq_array = (p.features & IORING_FEAT_NO_SQARRAY) != 0;
 
@@ -137,8 +129,8 @@ ui_uring_submit(ui_vCPU *v)
     /* Track pending requests */
     v->uring_pending++;
 
-    /* Submit via single syscall */
-    ui_uring_enter(v->ring_fd, 1, 0, 0);
+    /* Submit via single syscall, flush pending completions */
+    ui_uring_enter(v->ring_fd, 1, 0, IORING_ENTER_GETEVENTS);
 }
 
 /* Drain all available CQEs, waking goroutines */
@@ -172,6 +164,7 @@ ui_io_submit_and_wait(ui_vCPU *v, struct io_uring_sqe *sqe)
 {
     ui_Goro *cur = v->current;
     sqe->user_data = (uint64_t)(uintptr_t)cur;
+    cur->io_pending = 1;
     ui_uring_submit(v);
 
     cur->state = UI_WAITING;
@@ -180,26 +173,12 @@ ui_io_submit_and_wait(ui_vCPU *v, struct io_uring_sqe *sqe)
     /* Check if completion already arrived */
     ui_uring_drain(v);
 
-    if (cur->state == UI_WAITING)
+    while (cur->io_pending)
     {
-        /* io_uring completion not yet available.
-         * Use ui_Yield to properly save g->rsp and hand control
-         * to the scheduler. The idle loop will drain CQEs and
-         * insert us back into the runq when the CQE arrives.
-         * ui_Yield sets state=READY, so we compensate.
-         * This may schedule us a few times before the CQE arrives,
-         * but it correctly preserves the goroutine's stack. */
-        for (;;)
-        {
-            cur->state = UI_READY;
-            ui_Yield();
-            cur->state = UI_WAITING;
-            ui_uring_drain(v);
-            if (cur->state != UI_WAITING)
-                break;
-        }
+        cur->state = UI_READY;
+        ui_Yield();
+        ui_uring_drain(v);
     }
-
 
     return cur->io_result;
 }
@@ -259,4 +238,108 @@ ui_Open(const char *pathname, int flags, ...)
     mode_t mode = 0;
     if (flags & O_CREAT) { va_start(ap, flags); mode = va_arg(ap, mode_t); va_end(ap); }
     return open(pathname, flags, mode);
+}
+
+/* ── Socket operations via io_uring ── */
+
+ssize_t
+ui_Recv(int fd, void *buf, size_t count, int flags)
+{
+    ui_vCPU *v = ui_this_vcpu;
+    if (!v || !v->current) return recv(fd, buf, count, flags);
+    if (ui_vcpu_ensure_ring(v) < 0) return recv(fd, buf, count, flags);
+
+    struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
+    if (!sqe) return recv(fd, buf, count, flags);
+
+    sqe->opcode = IORING_OP_RECV;
+    sqe->fd = fd;
+    sqe->addr = (unsigned long)(uintptr_t)buf;
+    sqe->len = count;
+    sqe->rw_flags = flags;
+    return ui_io_submit_and_wait(v, sqe);
+}
+
+ssize_t
+ui_Send(int fd, const void *buf, size_t count, int flags)
+{
+    ui_vCPU *v = ui_this_vcpu;
+    if (!v || !v->current) return send(fd, buf, count, flags);
+    if (ui_vcpu_ensure_ring(v) < 0) return send(fd, buf, count, flags);
+
+    struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
+    if (!sqe) return send(fd, buf, count, flags);
+
+    sqe->opcode = IORING_OP_SEND;
+    sqe->fd = fd;
+    sqe->addr = (unsigned long)(uintptr_t)buf;
+    sqe->len = count;
+    sqe->rw_flags = flags;
+    return ui_io_submit_and_wait(v, sqe);
+}
+
+int
+ui_Connect(int fd, const struct sockaddr *addr, socklen_t addrlen)
+{
+    ui_vCPU *v = ui_this_vcpu;
+    if (!v || !v->current) return connect(fd, addr, addrlen);
+    if (ui_vcpu_ensure_ring(v) < 0) return connect(fd, addr, addrlen);
+
+    struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
+    if (!sqe) return connect(fd, addr, addrlen);
+
+    sqe->opcode = IORING_OP_CONNECT;
+    sqe->fd = fd;
+    sqe->addr = (unsigned long)(uintptr_t)addr;
+    sqe->off = addrlen;
+    return (int)ui_io_submit_and_wait(v, sqe);
+}
+
+int
+ui_Accept(int fd, struct sockaddr *addr, socklen_t *addrlen)
+{
+    ui_vCPU *v = ui_this_vcpu;
+    if (!v || !v->current) return accept(fd, addr, addrlen);
+    if (ui_vcpu_ensure_ring(v) < 0) return accept(fd, addr, addrlen);
+
+    struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
+    if (!sqe) return accept(fd, addr, addrlen);
+
+    sqe->opcode = IORING_OP_ACCEPT;
+    sqe->fd = fd;
+    sqe->addr = (unsigned long)(uintptr_t)addr;
+    sqe->off = (unsigned long)(uintptr_t)addrlen;
+    return (int)ui_io_submit_and_wait(v, sqe);
+}
+
+int
+ui_Close(int fd)
+{
+    ui_vCPU *v = ui_this_vcpu;
+    if (!v || !v->current) return close(fd);
+    if (ui_vcpu_ensure_ring(v) < 0) return close(fd);
+
+    struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
+    if (!sqe) return close(fd);
+
+    sqe->opcode = IORING_OP_CLOSE;
+    sqe->fd = fd;
+    ssize_t ret = ui_io_submit_and_wait(v, sqe);
+    return (ret < 0) ? (int)ret : 0;
+}
+
+int
+ui_Shutdown(int fd, int how)
+{
+    ui_vCPU *v = ui_this_vcpu;
+    if (!v || !v->current) return shutdown(fd, how);
+    if (ui_vcpu_ensure_ring(v) < 0) return shutdown(fd, how);
+
+    struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
+    if (!sqe) return shutdown(fd, how);
+
+    sqe->opcode = IORING_OP_SHUTDOWN;
+    sqe->fd = fd;
+    sqe->rw_flags = (unsigned)how;
+    return (int)ui_io_submit_and_wait(v, sqe);
 }

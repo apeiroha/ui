@@ -62,6 +62,7 @@ struct ui_Goro
     void     *chan_ptr;
     uint64_t  io_token;
     ssize_t   io_result;
+    int       io_pending;  /* non-zero while an io_uring op is in flight */
 };
 
 typedef struct
@@ -148,6 +149,8 @@ int           ui_sleepq_expire(ui_vCPU *v, uint64_t now_ms);
 uint64_t      ui_now_ms(void);
 
 int           ui_vcpu_ensure_ring(ui_vCPU *v);
+int           ui_uring_enter(int ring_fd, unsigned to_submit,
+                             unsigned min_complete, unsigned flags);
 
 /* ── Wait queue abstraction ── */
 

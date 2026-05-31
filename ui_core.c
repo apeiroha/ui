@@ -520,6 +520,9 @@ ui_Init(void)
     int ncpus = (int)sysconf(_SC_NPROCESSORS_ONLN);
     if (ncpus < 1) ncpus = 1;
     if (ncpus > UI_MAX_VCPUS) ncpus = UI_MAX_VCPUS;
+    /* Allow override via environment for testing */
+    const char *env_ncpus = getenv("UI_NVCPUS");
+    if (env_ncpus) { int n = atoi(env_ncpus); if (n >= 1 && n <= UI_MAX_VCPUS) ncpus = n; }
     g_ui_sched.nvcpus = ncpus;
     g_ui_sched.vcpus = calloc((size_t)ncpus, sizeof(ui_vCPU));
     if (!g_ui_sched.vcpus) { ui_teardown_signal_handler(); return -1; }
@@ -611,6 +614,7 @@ ui_goro_alloc(ui_Func0 entry, void *arg, int stack_size)
     ui_goro_init(g);
     g->first_run = 1;
     g->sleepq_idx = -1;
+    g->io_pending = 0;
     return g;
 }
 
@@ -731,12 +735,15 @@ ui_vcpu_idle(ui_vCPU *v)
 
         /* Drain any pending io_uring completions */
         if (v->ring_fd > 0) {
+            /* Flush deferred completions (IORING_SETUP_DEFER_TASKRUN) */
+            ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
             unsigned ch = *v->cq_head, ct = *v->cq_tail, cm = *v->cq_ring_mask;
             while (ch != ct) {
                 struct io_uring_cqe *cqe = &v->cq_cqes[ch & cm];
                 if (cqe->user_data != 0) {
                     ui_Goro *g = (ui_Goro *)(uintptr_t)cqe->user_data;
                     g->io_result = cqe->res;
+                    g->io_pending = 0;
                     g->state = UI_READY;
                     ui_runq_insert(v, g);
                     v->uring_pending--;
@@ -761,7 +768,7 @@ ui_vcpu_idle(ui_vCPU *v)
     { uint64_t val; read(v->event_fd, &val, sizeof(val)); }
 }
 
-static void * __attribute__((noinline))
+static void *
 ui_vcpu_main(void *arg)
 {
     ui_vCPU *v = arg;
@@ -781,20 +788,18 @@ ui_vcpu_main(void *arg)
     return NULL;
 }
 
-void __attribute__((noinline))
+void
 ui_Run(void)
 {
     if (g_ui_sched.nvcpus == 0) return;
-    ui_vCPU *main_v = &g_ui_sched.vcpus[0];
-    main_v->thread = pthread_self();
-    ui_this_vcpu = main_v;  /* main thread also needs the vCPU pointer */
+    g_ui_sched.vcpus[0].thread = pthread_self();
+    ui_this_vcpu = &g_ui_sched.vcpus[0];
     for (int i = 1; i < g_ui_sched.nvcpus; i++)
     {
-        int rc = pthread_create(&g_ui_sched.vcpus[i].thread, NULL,
-                                 ui_vcpu_main, &g_ui_sched.vcpus[i]);
-        (void)rc;
+        pthread_create(&g_ui_sched.vcpus[i].thread, NULL,
+                       ui_vcpu_main, &g_ui_sched.vcpus[i]);
     }
-    ui_vcpu_main(main_v);
+    ui_vcpu_main(&g_ui_sched.vcpus[0]);
     for (int i = 1; i < g_ui_sched.nvcpus; i++)
     {
         atomic_store(&g_ui_sched.vcpus[i].running, 0);
@@ -803,3 +808,4 @@ ui_Run(void)
         pthread_join(g_ui_sched.vcpus[i].thread, NULL);
     }
 }
+
