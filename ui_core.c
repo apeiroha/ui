@@ -55,6 +55,52 @@ ui_runq_empty(ui_vCPU *v)
     return v->runq_sentinel.next == &v->runq_sentinel;
 }
 
+/* ── Standbyq (cross-vCPU migration queue) ── */
+
+void
+ui_standbyq_init(ui_vCPU *v)
+{
+    v->standbyq_head = NULL;
+    v->standbyq_tail = NULL;
+    pthread_spin_init(&v->standbyq_lock, PTHREAD_PROCESS_PRIVATE);
+}
+
+void
+ui_standbyq_push(ui_vCPU *v, ui_Goro *g)
+{
+    g->wq_next = NULL;
+    pthread_spin_lock(&v->standbyq_lock);
+    if (v->standbyq_tail)
+        v->standbyq_tail->wq_next = g;
+    else
+        v->standbyq_head = g;
+    v->standbyq_tail = g;
+    pthread_spin_unlock(&v->standbyq_lock);
+}
+
+/* Drain all goroutines from standbyq into the runq.
+ * Called at the start of each ui_schedule(). */
+static void
+ui_drain_standbyq(ui_vCPU *v)
+{
+    pthread_spin_lock(&v->standbyq_lock);
+    ui_Goro *head = v->standbyq_head;
+    v->standbyq_head = NULL;
+    v->standbyq_tail = NULL;
+    pthread_spin_unlock(&v->standbyq_lock);
+
+    while (head)
+    {
+        ui_Goro *next = head->wq_next;
+        head->wq_next = NULL;
+        head->state = UI_READY;
+        if (head->sleepq_idx >= 0)
+            ui_sleepq_remove(v, head);
+        ui_runq_insert(v, head);
+        head = next;
+    }
+}
+
 /* ── Sleep queue (min-heap by wakeup_time) ── */
 
 uint64_t
@@ -210,14 +256,26 @@ ui_steal_work(ui_vCPU *v)
             batch_prev->next = batch_end->next;
             batch_end->next->prev = batch_prev;
 
-            s = &v->runq_sentinel;
-            batch_end->next = s;
-            batch_start->prev = s->prev;
-            s->prev->next = batch_start;
-            s->prev = batch_end;
+            pthread_spin_unlock(&vic->runq_lock);
 
-            for (ui_Goro *p = batch_start; p != s; p = p->next)
-                p->home_vcpu = v->id;
+            /* Push each stolen goroutine to target's standbyq.
+             * This avoids the race of directly splicing into target runq. */
+            {
+                ui_Goro *steal = batch_start;
+                for (;;)
+                {
+                    ui_Goro *next = steal->next;
+                    steal->next = NULL;
+                    steal->prev = NULL;
+                    steal->home_vcpu = v->id;
+                    steal->state = UI_READY;
+                    ui_standbyq_push(v, steal);
+                    if (steal == batch_end) break;
+                    steal = next;
+                }
+                uint64_t val = 1;
+                write(v->event_fd, &val, sizeof(val));
+            }
             ok = 1;
         }
 
@@ -257,23 +315,83 @@ ui_schedule(void)
     ui_vCPU *v = ui_get_vcpu();
     if (!v) return;
 
+    /* Drain standbyq: process goroutines pushed from other vCPUs */
+    ui_drain_standbyq(v);
+
     ui_Goro *g = NULL;
+    ui_Goro *cg = v->current;
+    v->current = NULL;
 
-    if (v->current && v->current->state == UI_READY)
+    /* Round-robin: if the previous goroutine yielded with READY,
+     * re-insert it at the tail of the runq under the lock. */
+    if (cg && cg->state == UI_READY)
     {
-        g = v->current->next;
-        if (g == &v->runq_sentinel) g = g->next;
-        if (g == &v->runq_sentinel) g = NULL;
+        pthread_spin_lock(&v->runq_lock);
+        /* cg was removed from the runq when it was last scheduled.
+         * Re-insert at tail. */
+        cg->state = UI_RUNNING; /* temporarily mark for insertion */
+        ui_runq_insert(v, cg);
+        cg->state = UI_READY;
+        pthread_spin_unlock(&v->runq_lock);
     }
 
-    if (!g)
+    /* Pick next goroutine from runq (under lock).  This eliminates the
+     * stale-sentinel race with work stealing. */
+    pthread_spin_lock(&v->runq_lock);
+    g = v->runq_sentinel.next;
+    if (g != &v->runq_sentinel && g->prev && g->next)
     {
-        g = v->runq_sentinel.next;
-        if (g == &v->runq_sentinel) g = NULL;
-    }
+        /* Remove from runq */
+        g->prev->next = g->next;
+        g->next->prev = g->prev;
+        g->next = NULL;
+        g->prev = NULL;
+        pthread_spin_unlock(&v->runq_lock);
 
-    if (g)
-    {
+        /* Clean up prev goroutine (DEAD or WAITING) */
+        if (cg)
+        {
+            if (cg->state == UI_DEAD)
+            {
+                if (cg->joiner)
+                {
+                    cg->joiner->state = UI_READY;
+                    ui_runq_insert(&g_ui_sched.vcpus[cg->joiner->home_vcpu], cg->joiner);
+                    cg->joiner = NULL;
+                }
+                ui_vCPU *cv = v;
+                if (cv->goro_pool_count < 16)
+                {
+                    void *sb = cg->stack_base;
+                    size_t sr = cg->stack_reserve;
+                    size_t sc = cg->stack_committed;
+                    int    ps = cg->page_size;
+                    memset(cg, 0, sizeof(ui_Goro));
+                    cg->stack_base = sb; cg->stack_reserve = sr;
+                    cg->stack_committed = sc; cg->page_size = ps;
+                    cg->sleepq_idx = -1;
+                    cv->goro_pool[cv->goro_pool_count] = cg;
+                    cv->goro_pool_count++;
+                }
+                else
+                {
+                    ui_stack_destroy(cg);
+                    pthread_mutex_lock(&g_ui_sched.free_lock);
+                    cg->wq_next = g_ui_sched.free_list;
+                    g_ui_sched.free_list = cg;
+                    pthread_mutex_unlock(&g_ui_sched.free_lock);
+                }
+                atomic_fetch_sub(&g_ui_sched.active_count, 1);
+            }
+            else if (cg->state == UI_WAITING)
+            {
+                /* Blocking goroutine was removed from runq
+                 * by the blocking code path before yield.
+                 * Nothing to clean up. */
+            }
+            /* UI_READY was already re-inserted above. */
+        }
+
         g->state = UI_RUNNING;
         v->current = g;
         if (g->first_run)
@@ -284,46 +402,50 @@ ui_schedule(void)
         else
             ui_switch(&v->sched_rsp, g->rsp);
     }
-
-    if (v->current)
+    else
     {
-        ui_Goro *cg = v->current;
-        v->current = NULL;
-        if (cg->state == UI_DEAD)
+        pthread_spin_unlock(&v->runq_lock);
+
+        /* No goroutine to run — clean up prev if DEAD/WAITING */
+        if (cg)
         {
-            if (cg->joiner)
+            if (cg->state == UI_DEAD)
             {
-                cg->joiner->state = UI_READY;
-                ui_runq_insert(&g_ui_sched.vcpus[cg->joiner->home_vcpu], cg->joiner);
-                cg->joiner = NULL;
+                if (cg->joiner)
+                {
+                    cg->joiner->state = UI_READY;
+                    ui_runq_insert(&g_ui_sched.vcpus[cg->joiner->home_vcpu], cg->joiner);
+                    cg->joiner = NULL;
+                }
+                ui_vCPU *cv = v;
+                if (cv->goro_pool_count < 16)
+                {
+                    void *sb = cg->stack_base;
+                    size_t sr = cg->stack_reserve;
+                    size_t sc = cg->stack_committed;
+                    int    ps = cg->page_size;
+                    memset(cg, 0, sizeof(ui_Goro));
+                    cg->stack_base = sb; cg->stack_reserve = sr;
+                    cg->stack_committed = sc; cg->page_size = ps;
+                    cg->sleepq_idx = -1;
+                    cv->goro_pool[cv->goro_pool_count] = cg;
+                    cv->goro_pool_count++;
+                }
+                else
+                {
+                    ui_stack_destroy(cg);
+                    pthread_mutex_lock(&g_ui_sched.free_lock);
+                    cg->wq_next = g_ui_sched.free_list;
+                    g_ui_sched.free_list = cg;
+                    pthread_mutex_unlock(&g_ui_sched.free_lock);
+                }
+                atomic_fetch_sub(&g_ui_sched.active_count, 1);
             }
-            ui_runq_remove(cg);
-            ui_vCPU *cv = v;
-            if (cv->goro_pool_count < 16)
+            else if (cg->state == UI_WAITING)
             {
-                void *sb = cg->stack_base;
-                size_t sr = cg->stack_reserve;
-                size_t sc = cg->stack_committed;
-                int    ps = cg->page_size;
-                memset(cg, 0, sizeof(ui_Goro));
-                cg->stack_base = sb; cg->stack_reserve = sr;
-                cg->stack_committed = sc; cg->page_size = ps;
-                cg->sleepq_idx = -1;
-                cv->goro_pool[cv->goro_pool_count] = cg;
-                cv->goro_pool_count++;
+                /* Already removed from runq by blocking code path. */
             }
-            else
-            {
-                ui_stack_destroy(cg);
-                pthread_mutex_lock(&g_ui_sched.free_lock);
-                cg->wq_next = g_ui_sched.free_list;
-                g_ui_sched.free_list = cg;
-                pthread_mutex_unlock(&g_ui_sched.free_lock);
-            }
-            atomic_fetch_sub(&g_ui_sched.active_count, 1);
         }
-        else if (cg->state == UI_WAITING)
-            ui_runq_remove(cg);
     }
 }
 
@@ -414,6 +536,7 @@ ui_Init(void)
         v->event_fd = eventfd(0, EFD_NONBLOCK);
         pthread_spin_init(&v->runq_lock, PTHREAD_PROCESS_PRIVATE);
         ui_runq_init(v);
+        ui_standbyq_init(v);
         atomic_store(&v->running, 1);
         v->rng_state = (uint32_t)(i * 0x9E3779B9 + 1);
     }
@@ -578,7 +701,6 @@ void
 ui_wakeup(ui_Goro *g)
 {
     if (!g) return;
-    g->state = UI_READY;
 
     int target = g->home_vcpu;
     if (target < 0 || target >= g_ui_sched.nvcpus) target = 0;
@@ -589,9 +711,20 @@ ui_wakeup(ui_Goro *g)
     if (g->sleepq_idx >= 0)
         ui_sleepq_remove(v_target, g);
 
-    ui_runq_insert(v_target, g);
-    uint64_t val = 1;
-    write(v_target->event_fd, &val, sizeof(val));
+    g->state = UI_READY;
+
+    /* Same-vCPU: insert directly into runq.
+     * Different vCPU: push to standbyq (avoids cross-vCPU runq race). */
+    if (ui_get_vcpu_id() == target)
+    {
+        ui_runq_insert(v_target, g);
+    }
+    else
+    {
+        ui_standbyq_push(v_target, g);
+        uint64_t val = 1;
+        write(v_target->event_fd, &val, sizeof(val));
+    }
 }
 
 static void

@@ -91,6 +91,12 @@ typedef struct
     atomic_int       running;
     long             tick;
     uint32_t         rng_state;
+    /* Standbyq — lock-protected list for cross-vCPU migration.
+     * Only the owning vCPU reads/drains; any vCPU my push.
+     * Reuses g->wq_next as the intrusive list link. */
+    ui_Goro         *standbyq_head;
+    ui_Goro         *standbyq_tail;
+    pthread_spinlock_t standbyq_lock;
 } ui_vCPU;
 
 typedef struct
@@ -130,6 +136,9 @@ void          ui_runq_init(ui_vCPU *v);
 void          ui_runq_insert(ui_vCPU *v, ui_Goro *g);
 void          ui_runq_remove(ui_Goro *g);
 int           ui_runq_empty(ui_vCPU *v);
+
+void          ui_standbyq_init(ui_vCPU *v);
+void          ui_standbyq_push(ui_vCPU *v, ui_Goro *g);
 
 void          ui_sleepq_push(ui_vCPU *v, ui_Goro *g, uint64_t deadline_ms);
 void          ui_sleepq_remove(ui_vCPU *v, ui_Goro *g);
