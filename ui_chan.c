@@ -208,9 +208,13 @@ ui_ChanFree(uint64_t ch)
 {
     ui_Chan *c = (ui_Chan *)(uintptr_t)ch;
     if (!c) return;
+    /* Caller must ensure no goroutines reference this channel
+     * (typically after ui_Run() returns and all goroutines are done). */
     ui_ChanClose(ch);
     pthread_spin_destroy(&c->lock);
+    memset(c->buf, 0xFD, c->cap * c->elem_size); /* debug canary */
     free(c->buf);
+    memset(c, 0xFC, sizeof(ui_Chan));             /* debug canary */
     free(c);
 }
 
@@ -219,34 +223,67 @@ ui_SelectWait(const uint64_t *recv_chs, void **recv_bufs,
               const uint64_t *send_chs, const void **send_vals,
               int nrecv, int nsend, int timeout_ms)
 {
-    (void)timeout_ms;
-
-    for (int i = 0; i < nrecv; i++)
+    for (;;)
     {
-        ui_Chan *c = (ui_Chan *)(uintptr_t)recv_chs[i];
-        pthread_spin_lock(&c->lock);
-        int ready = c->count > 0;
-        int is_closed = c->closed;
-        if (ready || is_closed) {
+        /* Scan all recv channels under each channel's lock */
+        for (int i = 0; i < nrecv; i++)
+        {
+            ui_Chan *c = (ui_Chan *)(uintptr_t)recv_chs[i];
+            pthread_spin_lock(&c->lock);
+            if (c->count > 0)
+            {
+                unsigned pos = c->read_idx % c->cap;
+                if (recv_bufs[i])
+                    memcpy(recv_bufs[i], (char *)c->buf + pos * c->elem_size, c->elem_size);
+                c->read_idx++;
+                c->count--;
+                ui_waitq_wake_one(&c->send_wait);
+                pthread_spin_unlock(&c->lock);
+                return i;
+            }
+            if (c->closed)
+            {
+                pthread_spin_unlock(&c->lock);
+                if (recv_bufs[i]) memset(recv_bufs[i], 0, c->elem_size);
+                return i;
+            }
             pthread_spin_unlock(&c->lock);
-            if (ready) { ui_ChanRecv(recv_chs[i], recv_bufs[i]); return i; }
-            if (is_closed) { if (recv_bufs[i]) memset(recv_bufs[i], 0, c->elem_size); return i; }
         }
-        pthread_spin_unlock(&c->lock);
-    }
 
-    for (int i = 0; i < nsend; i++)
-    {
-        ui_Chan *c = (ui_Chan *)(uintptr_t)send_chs[i];
-        pthread_spin_lock(&c->lock);
-        int ready = c->count < c->cap - 1 && !c->closed;
-        if (ready) {
+        /* Scan all send channels under each channel's lock */
+        for (int i = 0; i < nsend; i++)
+        {
+            ui_Chan *c = (ui_Chan *)(uintptr_t)send_chs[i];
+            pthread_spin_lock(&c->lock);
+            if (c->count < c->cap - 1 && !c->closed)
+            {
+                unsigned pos = c->write_idx % c->cap;
+                memcpy((char *)c->buf + pos * c->elem_size, send_vals[i], c->elem_size);
+                c->write_idx++;
+                c->count++;
+                ui_waitq_wake_one(&c->recv_wait);
+                pthread_spin_unlock(&c->lock);
+                return nrecv + i;
+            }
             pthread_spin_unlock(&c->lock);
-            ui_ChanTrySend(send_chs[i], send_vals[i]);
-            return nrecv + i;
         }
-        pthread_spin_unlock(&c->lock);
-    }
 
-    return -1;
+        /* Nothing ready. timeout=0 means non-blocking */
+        if (timeout_ms == 0)
+            return -1;
+
+        /* Yield and retry (polite poll). A proper blocking select
+         * would register on all waitqs, but wq_prev/wq_next are
+         * shared fields — a goroutine can only be in one waitq at a
+         * time.  The yield gives other goroutines a chance to make
+         * progress, then we retry. */
+        ui_Yield();
+
+        if (timeout_ms > 0)
+        {
+            timeout_ms -= 10;
+            if (timeout_ms <= 0)
+                return -1;
+        }
+    }
 }
