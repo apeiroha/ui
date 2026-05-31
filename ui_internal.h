@@ -126,6 +126,7 @@ extern void   ui_first_switch(void **sched_rsp_ptr, void *to_rsp);
 extern void   ui_trampoline(void);
 
 void          ui_schedule(void);
+void          ui_vcpu_idle(ui_vCPU *v);
 void          ui_wakeup(ui_Goro *g);
 void          ui_goro_exit(void);
 
