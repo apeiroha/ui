@@ -768,10 +768,13 @@ ui_vcpu_idle(ui_vCPU *v)
     { uint64_t val; read(v->event_fd, &val, sizeof(val)); }
 }
 
-static void *
+/* vCPU startup — receives integer index (not pointer) to avoid
+ * -O1+ PIE miscompilation of &g_ui_sched.vcpus[i]. */
+static void * __attribute__((noinline))
 ui_vcpu_main(void *arg)
 {
-    ui_vCPU *v = arg;
+    int idx = (int)(intptr_t)arg;
+    ui_vCPU *v = &g_ui_sched.vcpus[idx];
     v->thread = pthread_self();
     ui_this_vcpu = v;
     while (atomic_load(&v->running))
@@ -794,12 +797,14 @@ ui_Run(void)
     if (g_ui_sched.nvcpus == 0) return;
     g_ui_sched.vcpus[0].thread = pthread_self();
     ui_this_vcpu = &g_ui_sched.vcpus[0];
+    /* Pass integer index to prevent -O1+ PIE miscompilation
+     * (compiler confuses &g_ui_sched.vcpus[i] with function ptr). */
     for (int i = 1; i < g_ui_sched.nvcpus; i++)
     {
         pthread_create(&g_ui_sched.vcpus[i].thread, NULL,
-                       ui_vcpu_main, &g_ui_sched.vcpus[i]);
+                       ui_vcpu_main, (void*)(intptr_t)i);
     }
-    ui_vcpu_main(&g_ui_sched.vcpus[0]);
+    ui_vcpu_main((void*)(intptr_t)0);
     for (int i = 1; i < g_ui_sched.nvcpus; i++)
     {
         atomic_store(&g_ui_sched.vcpus[i].running, 0);
