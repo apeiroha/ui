@@ -785,24 +785,21 @@ void __attribute__((noinline))
 ui_Run(void)
 {
     if (g_ui_sched.nvcpus == 0) return;
-    /* Use local copies to prevent compiler optimization bugs */
-    ui_vCPU *vcpus = g_ui_sched.vcpus;
-    int nvcpus = g_ui_sched.nvcpus;
-    ui_vCPU *main_v = &vcpus[0];
+    ui_vCPU *main_v = &g_ui_sched.vcpus[0];
     main_v->thread = pthread_self();
     ui_this_vcpu = main_v;  /* main thread also needs the vCPU pointer */
-    for (int i = 1; i < nvcpus; i++)
+    for (int i = 1; i < g_ui_sched.nvcpus; i++)
     {
-        /* Store arg explicitly to help the compiler */
-        void *arg = &vcpus[i];
-        pthread_create(&vcpus[i].thread, NULL, ui_vcpu_main, arg);
+        int rc = pthread_create(&g_ui_sched.vcpus[i].thread, NULL,
+                                 ui_vcpu_main, &g_ui_sched.vcpus[i]);
+        (void)rc;
     }
     ui_vcpu_main(main_v);
-    for (int i = 1; i < nvcpus; i++)
+    for (int i = 1; i < g_ui_sched.nvcpus; i++)
     {
-        atomic_store(&vcpus[i].running, 0);
+        atomic_store(&g_ui_sched.vcpus[i].running, 0);
         uint64_t val = 1;
-        write(vcpus[i].event_fd, &val, sizeof(val));
-        pthread_join(vcpus[i].thread, NULL);
+        write(g_ui_sched.vcpus[i].event_fd, &val, sizeof(val));
+        pthread_join(g_ui_sched.vcpus[i].thread, NULL);
     }
 }
