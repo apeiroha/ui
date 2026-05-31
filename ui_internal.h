@@ -45,7 +45,8 @@ struct ui_Goro
 
     int       state;
     int       home_vcpu;
-    int       first_run;  /* 1 = never scheduled yet, use ui_first_switch */
+    int       first_run;
+    int       sleepq_idx;  /* index in sleepq heap, -1 if not in sleepq */
     /* Intrusive circular linked list (runq) */
     ui_Goro  *prev;
     ui_Goro  *next;
@@ -54,6 +55,8 @@ struct ui_Goro
     ui_Goro  *wq_next;
 
     ui_Goro  *joiner;
+
+    uint64_t  wakeup_time;  /* absolute ms (monotonic), for sleepq */
 
     void     *chan_ptr;
     uint64_t  io_token;
@@ -75,6 +78,9 @@ typedef struct
     struct io_uring_cqe *cq_cqes;
     void            *sched_rsp;
     ui_Goro         *current;
+    /* Sleep queue (binary min-heap by wakeup_time) */
+    ui_Goro         *sleepq[256];
+    int              sleepq_size;
     atomic_int       running;
     long             tick;
 } ui_vCPU;
@@ -114,5 +120,28 @@ void          ui_runq_init(ui_vCPU *v);
 void          ui_runq_insert(ui_vCPU *v, ui_Goro *g);
 void          ui_runq_remove(ui_Goro *g);
 int           ui_runq_empty(ui_vCPU *v);
+
+void          ui_sleepq_push(ui_vCPU *v, ui_Goro *g, uint64_t deadline_ms);
+void          ui_sleepq_remove(ui_vCPU *v, ui_Goro *g);
+ui_Goro      *ui_sleepq_pop(ui_vCPU *v);
+int           ui_sleepq_expire(ui_vCPU *v, uint64_t now_ms);
+uint64_t      ui_now_ms(void);
+
+/* ── Wait queue abstraction ── */
+
+typedef struct {
+    ui_Goro *head;
+    int      count;
+} ui_WaitQ;
+
+void          ui_waitq_init(ui_WaitQ *q);
+int           ui_waitq_empty(ui_WaitQ *q);
+void          ui_waitq_push(ui_WaitQ *q, ui_Goro *g);
+void          ui_waitq_remove(ui_WaitQ *q, ui_Goro *g);
+ui_Goro      *ui_waitq_pop(ui_WaitQ *q);
+ui_Goro      *ui_waitq_peek(ui_WaitQ *q);
+void          ui_waitq_wake_one(ui_WaitQ *q);
+void          ui_waitq_wake_all(ui_WaitQ *q);
+int           ui_waitq_count(ui_WaitQ *q);
 
 #endif

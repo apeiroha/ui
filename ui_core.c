@@ -44,6 +44,117 @@ ui_runq_empty(ui_vCPU *v)
     return v->runq_sentinel.next == &v->runq_sentinel;
 }
 
+/* ── Sleep queue (min-heap by wakeup_time) ── */
+
+uint64_t
+ui_now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+}
+
+static void
+sleepq_sift_up(ui_vCPU *v, int idx)
+{
+    while (idx > 0)
+    {
+        int parent = (idx - 1) / 2;
+        if (v->sleepq[idx]->wakeup_time >= v->sleepq[parent]->wakeup_time)
+            break;
+        ui_Goro *tmp = v->sleepq[idx];
+        v->sleepq[idx] = v->sleepq[parent];
+        v->sleepq[parent] = tmp;
+        v->sleepq[idx]->sleepq_idx = idx;
+        v->sleepq[parent]->sleepq_idx = parent;
+        idx = parent;
+    }
+}
+
+static void
+sleepq_sift_down(ui_vCPU *v, int idx)
+{
+    int size = v->sleepq_size;
+    for (;;)
+    {
+        int smallest = idx;
+        int left = 2 * idx + 1;
+        int right = 2 * idx + 2;
+        if (left < size && v->sleepq[left]->wakeup_time < v->sleepq[smallest]->wakeup_time)
+            smallest = left;
+        if (right < size && v->sleepq[right]->wakeup_time < v->sleepq[smallest]->wakeup_time)
+            smallest = right;
+        if (smallest == idx)
+            break;
+        ui_Goro *tmp = v->sleepq[idx];
+        v->sleepq[idx] = v->sleepq[smallest];
+        v->sleepq[smallest] = tmp;
+        v->sleepq[idx]->sleepq_idx = idx;
+        v->sleepq[smallest]->sleepq_idx = smallest;
+        idx = smallest;
+    }
+}
+
+void
+ui_sleepq_push(ui_vCPU *v, ui_Goro *g, uint64_t deadline_ms)
+{
+    if (v->sleepq_size >= 256)
+        return;
+    g->wakeup_time = deadline_ms;
+    g->sleepq_idx = v->sleepq_size;
+    v->sleepq[v->sleepq_size] = g;
+    v->sleepq_size++;
+    sleepq_sift_up(v, g->sleepq_idx);
+}
+
+void
+ui_sleepq_remove(ui_vCPU *v, ui_Goro *g)
+{
+    int idx = g->sleepq_idx;
+    if (idx < 0 || idx >= v->sleepq_size || v->sleepq[idx] != g)
+        return;
+    v->sleepq_size--;
+    if (idx < v->sleepq_size)
+    {
+        v->sleepq[idx] = v->sleepq[v->sleepq_size];
+        v->sleepq[idx]->sleepq_idx = idx;
+        sleepq_sift_down(v, idx);
+        sleepq_sift_up(v, idx);
+    }
+    g->sleepq_idx = -1;
+}
+
+ui_Goro *
+ui_sleepq_pop(ui_vCPU *v)
+{
+    if (v->sleepq_size == 0)
+        return NULL;
+    ui_Goro *g = v->sleepq[0];
+    v->sleepq_size--;
+    if (v->sleepq_size > 0)
+    {
+        v->sleepq[0] = v->sleepq[v->sleepq_size];
+        v->sleepq[0]->sleepq_idx = 0;
+        sleepq_sift_down(v, 0);
+    }
+    g->sleepq_idx = -1;
+    return g;
+}
+
+int
+ui_sleepq_expire(ui_vCPU *v, uint64_t now_ms)
+{
+    int count = 0;
+    while (v->sleepq_size > 0 && v->sleepq[0]->wakeup_time <= now_ms)
+    {
+        ui_Goro *g = ui_sleepq_pop(v);
+        g->state = UI_READY;
+        ui_runq_insert(v, g);
+        count++;
+    }
+    return count;
+}
+
 static ui_vCPU *
 ui_get_vcpu(void)
 {
@@ -257,12 +368,13 @@ ui_goro_alloc(ui_Func0 entry, void *arg, int stack_size)
     g = g_ui_sched.free_list;
     if (g) g_ui_sched.free_list = g->wq_next;
     pthread_mutex_unlock(&g_ui_sched.free_lock);
-    if (!g) { g = calloc(1, sizeof(ui_Goro)); if (!g) return NULL; }
+    if (!g) { g = calloc(1, sizeof(ui_Goro)); if (!g) return NULL; g->sleepq_idx = -1; }
     g->entry = entry;
     g->arg = arg;
     if (ui_stack_init(g, stack_size) < 0) { free(g); return NULL; }
     ui_goro_init(g);
     g->first_run = 1;
+    g->sleepq_idx = -1;
     return g;
 }
 
@@ -333,15 +445,15 @@ ui_Yield(void)
 void
 ui_Sleep(unsigned int ms)
 {
-    struct timespec deadline;
-    clock_gettime(CLOCK_MONOTONIC, &deadline);
-    deadline.tv_sec += ms / 1000;
-    deadline.tv_nsec += (long)(ms % 1000) * 1000000L;
-    if (deadline.tv_nsec >= 1000000000L) { deadline.tv_sec++; deadline.tv_nsec -= 1000000000L; }
-    struct timespec now;
-    do { ui_Yield(); clock_gettime(CLOCK_MONOTONIC, &now); }
-    while (now.tv_sec < deadline.tv_sec ||
-           (now.tv_sec == deadline.tv_sec && now.tv_nsec < deadline.tv_nsec));
+    ui_vCPU *v = ui_get_vcpu();
+    if (!v || !v->current) return;
+
+    uint64_t deadline = ui_now_ms() + ms;
+    v->current->state = UI_WAITING;
+    ui_sleepq_push(v, v->current, deadline);
+
+    /* Switch to scheduler (cleanup will remove from runq) */
+    ui_switch(&v->current->rsp, v->sched_rsp);
 }
 
 void
@@ -349,18 +461,41 @@ ui_wakeup(ui_Goro *g)
 {
     if (!g) return;
     g->state = UI_READY;
+
     int target = g->home_vcpu;
     if (target < 0 || target >= g_ui_sched.nvcpus) target = 0;
-    ui_runq_insert(&g_ui_sched.vcpus[target], g);
+
+    ui_vCPU *v_target = &g_ui_sched.vcpus[target];
+
+    /* Remove from sleepq if sleeping */
+    if (g->sleepq_idx >= 0)
+        ui_sleepq_remove(v_target, g);
+
+    ui_runq_insert(v_target, g);
     uint64_t val = 1;
-    write(g_ui_sched.vcpus[target].event_fd, &val, sizeof(val));
+    write(v_target->event_fd, &val, sizeof(val));
 }
 
 static void
 ui_vcpu_idle(ui_vCPU *v)
 {
+    /* Expire sleepq entries first */
+    uint64_t now = ui_now_ms();
+    ui_sleepq_expire(v, now);
+
+    if (!ui_runq_empty(v))
+        return;
+
+    /* Calculate timeout until next sleepq entry */
+    int timeout_ms = 100;
+    if (v->sleepq_size > 0 && v->sleepq[0]->wakeup_time > now)
+    {
+        uint64_t delta = v->sleepq[0]->wakeup_time - now;
+        timeout_ms = (int)(delta < 10000 ? delta : 10000);
+    }
+
     struct pollfd pfd = { .fd = v->event_fd, .events = POLLIN };
-    int ret = poll(&pfd, 1, 100);
+    int ret = poll(&pfd, 1, timeout_ms);
     if (ret > 0 && (pfd.revents & POLLIN))
     { uint64_t val; read(v->event_fd, &val, sizeof(val)); }
 }

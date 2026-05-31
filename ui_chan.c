@@ -2,7 +2,6 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
 
 typedef struct ui_Chan ui_Chan;
 
@@ -16,10 +15,8 @@ struct ui_Chan
     unsigned write_idx;
     int      closed;
 
-    ui_Goro *send_wait;
-    int      send_count;
-    ui_Goro *recv_wait;
-    int      recv_count;
+    ui_WaitQ send_wait;
+    ui_WaitQ recv_wait;
 };
 
 static ui_vCPU *
@@ -35,46 +32,28 @@ ui_get_vcpu(void)
 }
 
 static void
-ui_wait(ui_Goro *g, int new_state)
+ui_wait(ui_Goro *g)
 {
-    g->state = new_state;
+    g->state = UI_WAITING;
     ui_vCPU *v = ui_get_vcpu();
-    if (v)
-        ui_switch(&g->rsp, v->sched_rsp);
-}
-
-static void
-ui_wake_one(ui_Goro **list, int *count)
-{
-    if (*count == 0)
-        return;
-
-    ui_Goro *w = *list;
-    *list = w->wq_next;
-    (*count)--;
-    w->wq_next = NULL;
-    w->state = UI_READY;
-    ui_wakeup(w);
+    if (v) ui_switch(&g->rsp, v->sched_rsp);
 }
 
 uint64_t
 ui_NewChan(size_t elem_size, unsigned int buf_cap)
 {
     ui_Chan *c = calloc(1, sizeof(ui_Chan));
-    if (!c)
-        return 0;
+    if (!c) return 0;
 
-    if (buf_cap == 0)
-        buf_cap = 1;
+    if (buf_cap == 0) buf_cap = 1;
 
     c->elem_size = elem_size;
     c->cap = buf_cap + 1;
     c->buf = calloc(c->cap, elem_size);
-    if (!c->buf)
-    {
-        free(c);
-        return 0;
-    }
+    if (!c->buf) { free(c); return 0; }
+
+    ui_waitq_init(&c->send_wait);
+    ui_waitq_init(&c->recv_wait);
 
     return (uint64_t)(uintptr_t)c;
 }
@@ -83,8 +62,7 @@ void
 ui_ChanSend(uint64_t ch, const void *val)
 {
     ui_Chan *c = (ui_Chan *)(uintptr_t)ch;
-    if (!c || c->closed)
-        return;
+    if (!c || c->closed) return;
 
     for (;;)
     {
@@ -94,34 +72,16 @@ ui_ChanSend(uint64_t ch, const void *val)
             memcpy((char *)c->buf + pos * c->elem_size, val, c->elem_size);
             c->write_idx++;
             c->count++;
-
-            ui_wake_one(&c->recv_wait, &c->recv_count);
+            ui_waitq_wake_one(&c->recv_wait);
             return;
         }
 
-        /* Full — block */
         {
             ui_vCPU *v = ui_get_vcpu();
-            if (!v || !v->current)
-                return;
-
-            ui_Goro *cur = v->current;
-            cur->wq_next = NULL;
-            if (!c->send_wait)
-                c->send_wait = cur;
-            else
-            {
-                ui_Goro *p = c->send_wait;
-                while (p->wq_next)
-                    p = p->wq_next;
-                p->wq_next = cur;
-            }
-            c->send_count++;
-
-            ui_wait(cur, UI_WAITING);
-
-            if (c->closed)
-                return;
+            if (!v || !v->current) return;
+            ui_waitq_push(&c->send_wait, v->current);
+            ui_wait(v->current);
+            if (c->closed) return;
         }
     }
 }
@@ -130,8 +90,7 @@ void
 ui_ChanRecv(uint64_t ch, void *val)
 {
     ui_Chan *c = (ui_Chan *)(uintptr_t)ch;
-    if (!c)
-        return;
+    if (!c) return;
 
     for (;;)
     {
@@ -142,43 +101,24 @@ ui_ChanRecv(uint64_t ch, void *val)
                 memcpy(val, (char *)c->buf + pos * c->elem_size, c->elem_size);
             c->read_idx++;
             c->count--;
-
-            ui_wake_one(&c->send_wait, &c->send_count);
+            ui_waitq_wake_one(&c->send_wait);
             return;
         }
 
         if (c->closed)
         {
-            if (val)
-                memset(val, 0, c->elem_size);
+            if (val) memset(val, 0, c->elem_size);
             return;
         }
 
-        /* Empty — block */
         {
             ui_vCPU *v = ui_get_vcpu();
-            if (!v || !v->current)
-                return;
-
-            ui_Goro *cur = v->current;
-            cur->wq_next = NULL;
-            if (!c->recv_wait)
-                c->recv_wait = cur;
-            else
-            {
-                ui_Goro *p = c->recv_wait;
-                while (p->wq_next)
-                    p = p->wq_next;
-                p->wq_next = cur;
-            }
-            c->recv_count++;
-
-            ui_wait(cur, UI_WAITING);
-
+            if (!v || !v->current) return;
+            ui_waitq_push(&c->recv_wait, v->current);
+            ui_wait(v->current);
             if (c->closed && c->count == 0)
             {
-                if (val)
-                    memset(val, 0, c->elem_size);
+                if (val) memset(val, 0, c->elem_size);
                 return;
             }
         }
@@ -189,8 +129,7 @@ bool
 ui_ChanTrySend(uint64_t ch, const void *val)
 {
     ui_Chan *c = (ui_Chan *)(uintptr_t)ch;
-    if (!c || c->closed)
-        return false;
+    if (!c || c->closed) return false;
 
     if (c->count < c->cap - 1)
     {
@@ -198,8 +137,7 @@ ui_ChanTrySend(uint64_t ch, const void *val)
         memcpy((char *)c->buf + pos * c->elem_size, val, c->elem_size);
         c->write_idx++;
         c->count++;
-
-        ui_wake_one(&c->recv_wait, &c->recv_count);
+        ui_waitq_wake_one(&c->recv_wait);
         return true;
     }
     return false;
@@ -209,13 +147,11 @@ bool
 ui_ChanTryRecv(uint64_t ch, void *val)
 {
     ui_Chan *c = (ui_Chan *)(uintptr_t)ch;
-    if (!c)
-        return false;
+    if (!c) return false;
 
     if (c->closed)
     {
-        if (val)
-            memset(val, 0, c->elem_size);
+        if (val) memset(val, 0, c->elem_size);
         return true;
     }
 
@@ -226,8 +162,7 @@ ui_ChanTryRecv(uint64_t ch, void *val)
             memcpy(val, (char *)c->buf + pos * c->elem_size, c->elem_size);
         c->read_idx++;
         c->count--;
-
-        ui_wake_one(&c->send_wait, &c->send_count);
+        ui_waitq_wake_one(&c->send_wait);
         return true;
     }
     return false;
@@ -237,39 +172,17 @@ void
 ui_ChanClose(uint64_t ch)
 {
     ui_Chan *c = (ui_Chan *)(uintptr_t)ch;
-    if (!c || c->closed)
-        return;
-
+    if (!c || c->closed) return;
     c->closed = 1;
-
-    while (c->send_wait)
-    {
-        ui_Goro *w = c->send_wait;
-        c->send_wait = w->wq_next;
-        c->send_count--;
-        w->wq_next = NULL;
-        w->state = UI_READY;
-        ui_wakeup(w);
-    }
-
-    while (c->recv_wait)
-    {
-        ui_Goro *w = c->recv_wait;
-        c->recv_wait = w->wq_next;
-        c->recv_count--;
-        w->wq_next = NULL;
-        w->state = UI_READY;
-        ui_wakeup(w);
-    }
+    ui_waitq_wake_all(&c->send_wait);
+    ui_waitq_wake_all(&c->recv_wait);
 }
 
 void
 ui_ChanFree(uint64_t ch)
 {
     ui_Chan *c = (ui_Chan *)(uintptr_t)ch;
-    if (!c)
-        return;
-
+    if (!c) return;
     ui_ChanClose(ch);
     free(c->buf);
     free(c);
@@ -282,31 +195,18 @@ ui_SelectWait(const uint64_t *recv_chs, void **recv_bufs,
 {
     (void)timeout_ms;
 
-    /* Phase 1: try all non-blocking */
     for (int i = 0; i < nrecv; i++)
     {
         ui_Chan *c = (ui_Chan *)(uintptr_t)recv_chs[i];
-        if (c->count > 0)
-        {
-            ui_ChanRecv(recv_chs[i], recv_bufs[i]);
-            return i;
-        }
-        if (c->closed)
-        {
-            if (recv_bufs[i])
-                memset(recv_bufs[i], 0, c->elem_size);
-            return i;
-        }
+        if (c->count > 0) { ui_ChanRecv(recv_chs[i], recv_bufs[i]); return i; }
+        if (c->closed) { if (recv_bufs[i]) memset(recv_bufs[i], 0, c->elem_size); return i; }
     }
 
     for (int i = 0; i < nsend; i++)
     {
         ui_Chan *c = (ui_Chan *)(uintptr_t)send_chs[i];
         if (c->count < c->cap - 1 && !c->closed)
-        {
-            ui_ChanTrySend(send_chs[i], send_vals[i]);
-            return nrecv + i;
-        }
+        { ui_ChanTrySend(send_chs[i], send_vals[i]); return nrecv + i; }
     }
 
     return -1;
