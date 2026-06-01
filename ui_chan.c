@@ -71,7 +71,7 @@ ui_ChanSend(uint64_t ch, const void *val)
         pthread_spin_lock(&c->lock);
         if (c->closed) { pthread_spin_unlock(&c->lock); return; }
 
-        if (c->count < c->cap - 1)
+        if (c->count < c->cap)
         {
             unsigned pos = c->write_idx % c->cap;
             memcpy((char *)c->buf + pos * c->elem_size, val, c->elem_size);
@@ -144,7 +144,7 @@ ui_ChanTrySend(uint64_t ch, const void *val)
     pthread_spin_lock(&c->lock);
     if (c->closed) { pthread_spin_unlock(&c->lock); return false; }
 
-    if (c->count < c->cap - 1)
+    if (c->count < c->cap)
     {
         unsigned pos = c->write_idx % c->cap;
         memcpy((char *)c->buf + pos * c->elem_size, val, c->elem_size);
