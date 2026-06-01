@@ -218,6 +218,27 @@ ui_ChanFree(uint64_t ch)
     free(c);
 }
 
+// ── Timer Channel ──
+
+static uint64_t _ui_timer_ch;
+
+static void
+_ui_timer_proc(uintptr_t arg)
+{
+    unsigned int ms = (unsigned int)arg;
+    ui_Sleep(ms);
+    uint64_t val = 1;
+    ui_ChanSend(_ui_timer_ch, &val);
+}
+
+uint64_t
+ui_NewTimer(unsigned int ms)
+{
+    _ui_timer_ch = ui_NewChan(sizeof(uint64_t), 1);
+    ui_Go1Sized(_ui_timer_proc, (uintptr_t)ms, 0);
+    return _ui_timer_ch;
+}
+
 int
 ui_SelectWait(const uint64_t *recv_chs, void **recv_bufs,
               const uint64_t *send_chs, const void **send_vals,

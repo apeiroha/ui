@@ -30,6 +30,8 @@ bool     ui_ChanTryRecv(uint64_t c, void *val);
 void     ui_ChanClose(uint64_t c);
 void     ui_ChanFree(uint64_t c);
 
+uint64_t ui_NewTimer(unsigned int ms);
+
 int      ui_SelectWait(const uint64_t *recv_chs, void **recv_bufs,
                        const uint64_t *send_chs, const void **send_vals,
                        int nrecv, int nsend, int timeout_ms);
