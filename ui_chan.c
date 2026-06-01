@@ -245,6 +245,21 @@ ui_NewTimerUs(unsigned int us)
     return _ui_timer_ch;
 }
 
+void
+ui_TimerStop(uint64_t ch)
+{
+    if (ch)
+        ui_ChanClose(ch);
+}
+
+uint64_t
+ui_TimerReset(uint64_t old_ch, unsigned int new_us)
+{
+    if (old_ch)
+        ui_ChanClose(old_ch);
+    return ui_NewTimerUs(new_us);
+}
+
 int
 ui_SelectWait(const uint64_t *recv_chs, void **recv_bufs,
               const uint64_t *send_chs, const void **send_vals,

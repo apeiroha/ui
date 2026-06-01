@@ -33,6 +33,8 @@ void     ui_ChanFree(uint64_t c);
 
 uint64_t ui_NewTimer(unsigned int ms);
 uint64_t ui_NewTimerUs(unsigned int us);
+void     ui_TimerStop(uint64_t ch);
+uint64_t ui_TimerReset(uint64_t old_ch, unsigned int new_us);
 
 int      ui_SelectWait(const uint64_t *recv_chs, void **recv_bufs,
                        const uint64_t *send_chs, const void **send_vals,
