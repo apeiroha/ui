@@ -21,6 +21,7 @@ uint64_t ui_Go1Sized(void *fn, uintptr_t arg, int stack_size);
 
 void     ui_Yield(void);
 void     ui_Sleep(unsigned int ms);
+void     ui_SleepUs(unsigned int us);
 
 uint64_t ui_NewChan(size_t elem_size, unsigned int buf_cap);
 void     ui_ChanSend(uint64_t c, const void *val);
@@ -31,6 +32,7 @@ void     ui_ChanClose(uint64_t c);
 void     ui_ChanFree(uint64_t c);
 
 uint64_t ui_NewTimer(unsigned int ms);
+uint64_t ui_NewTimerUs(unsigned int us);
 
 int      ui_SelectWait(const uint64_t *recv_chs, void **recv_bufs,
                        const uint64_t *send_chs, const void **send_vals,

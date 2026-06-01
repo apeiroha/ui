@@ -57,7 +57,7 @@ struct ui_Goro
 
     ui_Goro  *joiner;
 
-    uint64_t  wakeup_time;  /* absolute ms (monotonic), for sleepq */
+    uint64_t  wakeup_time;  /* absolute us (monotonic), for sleepq */
 
     void     *chan_ptr;
     uint64_t  io_token;
@@ -143,11 +143,12 @@ int           ui_runq_empty(ui_vCPU *v);
 void          ui_standbyq_init(ui_vCPU *v);
 void          ui_standbyq_push(ui_vCPU *v, ui_Goro *g);
 
-int           ui_sleepq_push(ui_vCPU *v, ui_Goro *g, uint64_t deadline_ms);
+int           ui_sleepq_push(ui_vCPU *v, ui_Goro *g, uint64_t deadline_us);
 void          ui_sleepq_remove(ui_vCPU *v, ui_Goro *g);
 ui_Goro      *ui_sleepq_pop(ui_vCPU *v);
-int           ui_sleepq_expire(ui_vCPU *v, uint64_t now_ms);
+int           ui_sleepq_expire(ui_vCPU *v, uint64_t now_us);
 uint64_t      ui_now_ms(void);
+uint64_t      ui_now_us(void);
 
 int           ui_vcpu_ensure_ring(ui_vCPU *v);
 int           ui_uring_enter(int ring_fd, unsigned to_submit,

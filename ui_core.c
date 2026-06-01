@@ -121,11 +121,17 @@ ui_drain_standbyq(ui_vCPU *v)
 /* ── Sleep queue (min-heap by wakeup_time) ── */
 
 uint64_t
-ui_now_ms(void)
+ui_now_us(void)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+    return (uint64_t)ts.tv_sec * 1000000 + (uint64_t)ts.tv_nsec / 1000;
+}
+
+uint64_t
+ui_now_ms(void)
+{
+    return ui_now_us() / 1000;
 }
 
 static void
@@ -170,11 +176,11 @@ sleepq_sift_down(ui_vCPU *v, int idx)
 }
 
 int
-ui_sleepq_push(ui_vCPU *v, ui_Goro *g, uint64_t deadline_ms)
+ui_sleepq_push(ui_vCPU *v, ui_Goro *g, uint64_t deadline_us)
 {
     if (v->sleepq_size >= 256)
         return -1;
-    g->wakeup_time = deadline_ms;
+    g->wakeup_time = deadline_us;
     g->sleepq_idx = v->sleepq_size;
     v->sleepq[v->sleepq_size] = g;
     v->sleepq_size++;
@@ -217,10 +223,10 @@ ui_sleepq_pop(ui_vCPU *v)
 }
 
 int
-ui_sleepq_expire(ui_vCPU *v, uint64_t now_ms)
+ui_sleepq_expire(ui_vCPU *v, uint64_t now_us)
 {
     int count = 0;
-    while (v->sleepq_size > 0 && v->sleepq[0]->wakeup_time <= now_ms)
+    while (v->sleepq_size > 0 && v->sleepq[0]->wakeup_time <= now_us)
     {
         ui_Goro *g = ui_sleepq_pop(v);
         g->state = UI_READY;
@@ -330,7 +336,7 @@ ui_schedule(void)
 
     /* Expire sleepers so they become runnable (needed here, not just in idle
      * loop, to avoid deadlock when sleepq is full and no goroutine goes idle). */
-    ui_sleepq_expire(v, ui_now_ms());
+    ui_sleepq_expire(v, ui_now_us());
 
     ui_Goro *g = NULL;
     ui_Goro *cg = v->current;
@@ -688,10 +694,16 @@ ui_Yield(void)
 void
 ui_Sleep(unsigned int ms)
 {
+    ui_SleepUs((unsigned int)ms * 1000);
+}
+
+void
+ui_SleepUs(unsigned int us)
+{
     ui_vCPU *v = ui_get_vcpu();
     if (!v || !v->current) return;
 
-    uint64_t deadline = ui_now_ms() + ms;
+    uint64_t deadline = ui_now_us() + us;
     ui_Goro *g = v->current;
 
     /* If sleepq is full, yield and let the scheduler drain it, then retry */
@@ -700,7 +712,7 @@ ui_Sleep(unsigned int ms)
         g->state = UI_READY;
         ui_switch(&g->rsp, v->sched_rsp);
         /* Woken up — retry sleep */
-        deadline = ui_now_ms() + ms;
+        deadline = ui_now_us() + us;
     }
 
     g->state = UI_WAITING;
@@ -741,7 +753,7 @@ ui_wakeup(ui_Goro *g)
 void
 ui_vcpu_idle(ui_vCPU *v)
 {
-    uint64_t now = ui_now_ms();
+    uint64_t now = ui_now_us();
     ui_sleepq_expire(v, now);
     if (!ui_runq_empty(v)) return;
     if (ui_steal_work(v)) return;
@@ -769,14 +781,16 @@ ui_vcpu_idle(ui_vCPU *v)
         }
 
     /* Block on eventfd until timeout or wakeup */
-    int timeout_ms = 100;
+    struct timespec ts = { .tv_sec = 0, .tv_nsec = 100 * 1000000 }; /* 100ms default */
     if (v->sleepq_size > 0 && v->sleepq[0]->wakeup_time > now)
     {
-        uint64_t delta = v->sleepq[0]->wakeup_time - now;
-        timeout_ms = (int)(delta < 10000 ? delta : 10000);
+        uint64_t delta = v->sleepq[0]->wakeup_time - now; /* microseconds */
+        if (delta > 10000000) delta = 10000000; /* cap at 10s */
+        ts.tv_sec = delta / 1000000;
+        ts.tv_nsec = (long)(delta % 1000000) * 1000;
     }
     struct pollfd pfd = { .fd = v->event_fd, .events = POLLIN };
-    int ret = poll(&pfd, 1, timeout_ms);
+    int ret = ppoll(&pfd, 1, &ts, NULL);
     if (ret > 0 && (pfd.revents & POLLIN))
     { uint64_t val; read(v->event_fd, &val, sizeof(val)); }
 }
