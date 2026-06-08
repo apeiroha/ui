@@ -270,7 +270,7 @@ ui_steal_work(ui_vCPU *v)
             count++;
         }
 
-        int ok = 0;
+        bool ok = false;
         if (count > 0)
         {
             int steal_n = count > 1 ? count / 2 : 1;
