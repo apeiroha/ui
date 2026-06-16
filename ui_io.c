@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
+#include <poll.h>
 #include <linux/io_uring.h>
 
 #ifndef IORING_FEAT_NO_SQARRAY
@@ -366,4 +367,20 @@ ui_RecvMsg(int fd, struct msghdr *msg, int flags)
     sqe->len = 1;
     sqe->msg_flags = (unsigned)flags;
     return ui_io_submit_and_wait(v, sqe);
+}
+
+int
+ui_PollAdd(int fd, unsigned events)
+{
+    ui_vCPU *v = ui_this_vcpu;
+    if (!v || !v->current) return poll(&(struct pollfd){.fd = fd, .events = (short)events}, 1, -1);
+    if (ui_vcpu_ensure_ring(v) < 0) return poll(&(struct pollfd){.fd = fd, .events = (short)events}, 1, -1);
+
+    struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
+    if (!sqe) return poll(&(struct pollfd){.fd = fd, .events = (short)events}, 1, -1);
+
+    sqe->opcode = IORING_OP_POLL_ADD;
+    sqe->fd = fd;
+    sqe->poll_events = events;
+    return (int)ui_io_submit_and_wait(v, sqe);
 }
