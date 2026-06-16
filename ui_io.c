@@ -331,3 +331,39 @@ ui_Shutdown(int fd, int how)
     sqe->rw_flags = (unsigned)how;
     return (int)ui_io_submit_and_wait(v, sqe);
 }
+
+ssize_t
+ui_SendMsg(int fd, const struct msghdr *msg, int flags)
+{
+    ui_vCPU *v = ui_this_vcpu;
+    if (!v || !v->current) return sendmsg(fd, msg, flags);
+    if (ui_vcpu_ensure_ring(v) < 0) return sendmsg(fd, msg, flags);
+
+    struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
+    if (!sqe) return sendmsg(fd, msg, flags);
+
+    sqe->opcode = IORING_OP_SENDMSG;
+    sqe->fd = fd;
+    sqe->addr = (unsigned long)(uintptr_t)msg;
+    sqe->len = 1;
+    sqe->msg_flags = (unsigned)flags;
+    return ui_io_submit_and_wait(v, sqe);
+}
+
+ssize_t
+ui_RecvMsg(int fd, struct msghdr *msg, int flags)
+{
+    ui_vCPU *v = ui_this_vcpu;
+    if (!v || !v->current) return recvmsg(fd, msg, flags);
+    if (ui_vcpu_ensure_ring(v) < 0) return recvmsg(fd, msg, flags);
+
+    struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
+    if (!sqe) return recvmsg(fd, msg, flags);
+
+    sqe->opcode = IORING_OP_RECVMSG;
+    sqe->fd = fd;
+    sqe->addr = (unsigned long)(uintptr_t)msg;
+    sqe->len = 1;
+    sqe->msg_flags = (unsigned)flags;
+    return ui_io_submit_and_wait(v, sqe);
+}

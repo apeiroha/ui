@@ -58,6 +58,8 @@ int      ui_Open(const char *pathname, int flags, ...);
 
 ssize_t  ui_Recv(int fd, void *buf, size_t count, int flags);
 ssize_t  ui_Send(int fd, const void *buf, size_t count, int flags);
+ssize_t  ui_SendMsg(int fd, const struct msghdr *msg, int flags);
+ssize_t  ui_RecvMsg(int fd, struct msghdr *msg, int flags);
 int      ui_Connect(int fd, const struct sockaddr *addr, socklen_t addrlen);
 int      ui_Accept(int fd, struct sockaddr *addr, socklen_t *addrlen);
 int      ui_Close(int fd);
