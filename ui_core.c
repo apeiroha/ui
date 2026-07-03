@@ -411,7 +411,11 @@ ui_schedule(void)
      * loop, to avoid deadlock when sleepq is full and no goroutine goes idle). */
     ui_sleepq_expire(v, ui_now_us());
     if (v->uring_pending > 0)
+    {
+        /* DEFER_TASKRUN: completions only arrive on explicit GETEVENTS */
+        ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
         ui_uring_drain(v);
+    }
 
     ui_Goro *g = NULL;
     ui_Goro *cg = v->current;

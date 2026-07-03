@@ -43,11 +43,18 @@ ui_vcpu_ensure_ring(ui_vCPU *v)
 
     struct io_uring_params p;
     memset(&p, 0, sizeof(p));
-    p.flags = 0;
+    /* Each vCPU is the sole issuer of its ring. DEFER_TASKRUN defers
+     * completion processing to explicit io_uring_enter(GETEVENTS) calls,
+     * eliminating kernel IPIs and improving cache locality. */
+    p.flags = IORING_SETUP_SINGLE_ISSUER |
+              IORING_SETUP_DEFER_TASKRUN |
+              IORING_SETUP_COOP_TASKRUN;
 
     v->ring_fd = ui_uring_setup(UI_URING_ENTRIES, &p);
     if (v->ring_fd < 0)
     {
+        /* Fallback: kernel too old for the flags above */
+        memset(&p, 0, sizeof(p));
         p.flags = 0;
         v->ring_fd = ui_uring_setup(UI_URING_ENTRIES, &p);
     }
