@@ -333,9 +333,9 @@ ui_get_vcpu_id(void)
     return ui_this_vcpu ? ui_this_vcpu->id : 0;
 }
 
-/* Return a dead goro to the global lock-free pool.
- * The stack is preserved; physical pages are released via MADV_DONTNEED.
- * Must be called outside runq_lock. */
+/* Return a dead goro to a pool. Stacks preserved; physical pages released
+ * via MADV_DONTNEED. Must be called outside runq_lock.
+ * Tries per-vCPU pool first (no lock), then global pool (mutex). */
 static void
 ui_goro_recycle(ui_Goro *cg)
 {
@@ -345,25 +345,56 @@ ui_goro_recycle(ui_Goro *cg)
         ui_runq_insert(&g_ui_sched.vcpus[cg->joiner->home_vcpu], cg->joiner);
         cg->joiner = NULL;
     }
-    ui_stack_madvise_dontneed(cg);
-    /* Preserve stack info across memset */
-    void *sb = cg->stack_base;
-    size_t sr = cg->stack_reserve;
-    size_t sc = cg->stack_committed;
-    int    ps = cg->page_size;
-    memset(cg, 0, sizeof(ui_Goro));
-    cg->stack_base = sb;
-    cg->stack_reserve = sr;
-    cg->stack_committed = sc;
-    cg->page_size = ps;
-    cg->sleepq_idx = -1;
-    /* Push into Treiber stack */
-    ui_Goro *old;
-    do {
-        old = (ui_Goro *)atomic_load(&g_ui_sched.goro_pool);
-        cg->free_next = old;
-    } while (!atomic_compare_exchange_weak(&g_ui_sched.goro_pool,
-                (uintptr_t *)&old, (uintptr_t)cg));
+
+    ui_vCPU *v = ui_get_vcpu();
+
+    /* 1. Try per-vCPU pool (no lock) */
+    if (v && v->goro_pool_count < 16)
+    {
+        ui_stack_madvise_dontneed(cg);
+        void *sb = cg->stack_base;
+        size_t sr = cg->stack_reserve;
+        size_t sc = cg->stack_committed;
+        int    ps = cg->page_size;
+        memset(cg, 0, sizeof(ui_Goro));
+        cg->stack_base = sb;
+        cg->stack_reserve = sr;
+        cg->stack_committed = sc;
+        cg->page_size = ps;
+        cg->sleepq_idx = -1;
+        v->goro_pool[v->goro_pool_count] = cg;
+        v->goro_pool_count++;
+        atomic_fetch_sub(&g_ui_sched.active_count, 1);
+        return;
+    }
+
+    /* 2. Fall back to global pool (mutex) */
+    int pushed = 0;
+    pthread_mutex_lock(&g_ui_sched.goro_pool_lock);
+    if (g_ui_sched.goro_pool_count < UI_GORO_POOL_SIZE)
+    {
+        ui_stack_madvise_dontneed(cg);
+        void *sb = cg->stack_base;
+        size_t sr = cg->stack_reserve;
+        size_t sc = cg->stack_committed;
+        int    ps = cg->page_size;
+        memset(cg, 0, sizeof(ui_Goro));
+        cg->stack_base = sb;
+        cg->stack_reserve = sr;
+        cg->stack_committed = sc;
+        cg->page_size = ps;
+        cg->sleepq_idx = -1;
+        g_ui_sched.goro_pool[g_ui_sched.goro_pool_count] = cg;
+        g_ui_sched.goro_pool_count++;
+        pushed = 1;
+    }
+    pthread_mutex_unlock(&g_ui_sched.goro_pool_lock);
+
+    if (!pushed)
+    {
+        ui_stack_destroy(cg);
+        free(cg);
+    }
     atomic_fetch_sub(&g_ui_sched.active_count, 1);
 }
 
@@ -528,6 +559,7 @@ ui_Init(void)
     if (g_ui_sched.initialized) return 0;
     memset(&g_ui_sched, 0, sizeof(g_ui_sched));
     pthread_mutex_init(&g_ui_sched.global_lock, NULL);
+    pthread_mutex_init(&g_ui_sched.goro_pool_lock, NULL);
     if (ui_setup_signal_handler() < 0) return -1;
     int ncpus = (int)sysconf(_SC_NPROCESSORS_ONLN);
     if (ncpus < 1) ncpus = 1;
@@ -551,20 +583,15 @@ ui_Init(void)
         atomic_store(&v->running, 1);
         v->rng_state = (uint32_t)(i * 0x9E3779B9 + 1);
     }
-    /* Pre-allocate goros+stacks into the global lock-free pool */
+    /* Pre-allocate goros+stacks into the pool */
     for (int i = 0; i < UI_GORO_POOL_SIZE; i++)
     {
         ui_Goro *g = calloc(1, sizeof(ui_Goro));
         if (!g) break;
         g->sleepq_idx = -1;
         if (ui_stack_init(g, UI_STACK_INIT) < 0) { free(g); break; }
-        /* Push into Treiber stack */
-        ui_Goro *old;
-        do {
-            old = (ui_Goro *)atomic_load(&g_ui_sched.goro_pool);
-            g->free_next = old;
-        } while (!atomic_compare_exchange_weak(&g_ui_sched.goro_pool,
-                    (uintptr_t *)&old, (uintptr_t)g));
+        g_ui_sched.goro_pool[i] = g;
+        g_ui_sched.goro_pool_count = i + 1;
     }
     g_ui_sched.initialized = 1;
     return 0;
@@ -588,18 +615,24 @@ ui_Fini(void)
         if (g_ui_sched.vcpus[i].ring_fd >= 0)
             close(g_ui_sched.vcpus[i].ring_fd);
     }
-    /* Drain and destroy all goros in the pool */
-    for (;;)
+    /* Drain per-vCPU pools + global pool */
+    for (int i = 0; i < g_ui_sched.nvcpus; i++)
     {
-        ui_Goro *g = (ui_Goro *)atomic_load(&g_ui_sched.goro_pool);
-        if (!g) break;
-        ui_Goro *next = g->free_next;
-        if (!atomic_compare_exchange_weak(&g_ui_sched.goro_pool,
-                    (uintptr_t *)&g, (uintptr_t)next))
-            continue;
-        ui_stack_destroy(g);
-        free(g);
+        ui_vCPU *v = &g_ui_sched.vcpus[i];
+        for (int j = 0; j < v->goro_pool_count; j++)
+        {
+            ui_stack_destroy(v->goro_pool[j]);
+            free(v->goro_pool[j]);
+        }
+        v->goro_pool_count = 0;
     }
+    for (int i = 0; i < g_ui_sched.goro_pool_count; i++)
+    {
+        ui_stack_destroy(g_ui_sched.goro_pool[i]);
+        free(g_ui_sched.goro_pool[i]);
+    }
+    g_ui_sched.goro_pool_count = 0;
+    pthread_mutex_destroy(&g_ui_sched.goro_pool_lock);
     ui_teardown_signal_handler();
     free(g_ui_sched.vcpus);
     g_ui_sched.vcpus = NULL;
@@ -625,16 +658,31 @@ ui_goro_init(ui_Goro *g)
 static ui_Goro *
 ui_goro_alloc(ui_Func0 entry, void *arg, int stack_size)
 {
+    ui_vCPU *v = ui_get_vcpu();
     ui_Goro *g = NULL;
 
-    /* Try global lock-free pool first (goro + stack preserved) */
-    do {
-        g = (ui_Goro *)atomic_load(&g_ui_sched.goro_pool);
-        if (!g) break;
-    } while (!atomic_compare_exchange_weak(&g_ui_sched.goro_pool,
-                (uintptr_t *)&g, (uintptr_t)g->free_next));
+    /* 1. Try current vCPU's per-vCPU pool (no lock) */
+    if (v && v->goro_pool_count > 0)
+    {
+        v->goro_pool_count--;
+        g = v->goro_pool[v->goro_pool_count];
+        v->goro_pool[v->goro_pool_count] = NULL;
+    }
 
-    /* Allocate new if nothing available */
+    /* 2. Fall back to global pool (mutex) */
+    if (!g)
+    {
+        pthread_mutex_lock(&g_ui_sched.goro_pool_lock);
+        if (g_ui_sched.goro_pool_count > 0)
+        {
+            g_ui_sched.goro_pool_count--;
+            g = g_ui_sched.goro_pool[g_ui_sched.goro_pool_count];
+            g_ui_sched.goro_pool[g_ui_sched.goro_pool_count] = NULL;
+        }
+        pthread_mutex_unlock(&g_ui_sched.goro_pool_lock);
+    }
+
+    /* 3. Allocate new if nothing available */
     if (!g)
     {
         g = calloc(1, sizeof(ui_Goro));

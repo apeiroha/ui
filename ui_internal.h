@@ -85,6 +85,9 @@ typedef struct
     ui_Goro          runq_sentinel;
     pthread_spinlock_t runq_lock;
     atomic_int       runq_count;
+    /* Per-vCPU goro pool (only accessed by this vCPU = no lock) */
+    ui_Goro         *goro_pool[16];
+    int              goro_pool_count;
     int              event_fd;
     int              ring_fd;
     unsigned        *sq_head, *sq_tail, *sq_ring_mask, *sq_ring_entries;
@@ -121,8 +124,11 @@ typedef struct
     atomic_int       active_count;
     atomic_int       next_vcpu;
     pthread_mutex_t  global_lock;
-    /* Lock-free stack pool: goros with stacks attached, for reuse */
-    _Atomic(uintptr_t) goro_pool;
+    /* Pool of goros with stacks preserved (never munmap'd).
+     * Mutex-protected array; contention is negligible vs mmap savings. */
+    ui_Goro         *goro_pool[UI_GORO_POOL_SIZE];
+    int              goro_pool_count;
+    pthread_mutex_t  goro_pool_lock;
 
     struct sigaction old_sigsegv;
     stack_t          old_altstack;
