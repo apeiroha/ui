@@ -83,6 +83,7 @@ typedef struct
     /* Sentinel for intrusive circular runq list */
     ui_Goro          runq_sentinel;
     pthread_spinlock_t runq_lock;
+    atomic_int       runq_count;
     /* Goroutine pool (reuse stacks, avoid mmap) */
     ui_Goro         *goro_pool[16];
     int              goro_pool_count;

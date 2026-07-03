@@ -19,6 +19,7 @@ ui_runq_init(ui_vCPU *v)
 {
     v->runq_sentinel.next = &v->runq_sentinel;
     v->runq_sentinel.prev = &v->runq_sentinel;
+    atomic_store(&v->runq_count, 0);
 }
 
 /* Insert into runq (caller must hold runq_lock) */
@@ -49,6 +50,7 @@ ui_runq_insert_locked(ui_vCPU *v, ui_Goro *g)
     g->prev = last;
     last->next = g;
     s->prev = g;
+    atomic_fetch_add(&v->runq_count, 1);
 }
 
 void
@@ -65,13 +67,14 @@ ui_runq_remove(ui_Goro *g)
     g->next->prev = g->prev;
     g->next = NULL;
     g->prev = NULL;
+    atomic_fetch_sub(&v->runq_count, 1);
     pthread_spin_unlock(&v->runq_lock);
 }
 
 int
 ui_runq_empty(ui_vCPU *v)
 {
-    return v->runq_sentinel.next == &v->runq_sentinel;
+    return atomic_load(&v->runq_count) == 0;
 }
 
 /* ── Standbyq (cross-vCPU migration queue) ── */
@@ -258,6 +261,9 @@ ui_xorshift32(uint32_t *state)
 static int
 ui_steal_work(ui_vCPU *v)
 {
+    if (g_ui_sched.nvcpus <= 1)
+        return 0;
+
     for (int attempt = 0; attempt < g_ui_sched.nvcpus * 2; attempt++)
     {
         int vid = (int)(ui_xorshift32(&v->rng_state) % (uint32_t)g_ui_sched.nvcpus);
@@ -265,54 +271,51 @@ ui_steal_work(ui_vCPU *v)
 
         ui_vCPU *vic = &g_ui_sched.vcpus[vid];
         if (pthread_spin_trylock(&vic->runq_lock) != 0) continue;
-
-        int count = 0;
-        ui_Goro *s = &vic->runq_sentinel;
-        for (ui_Goro *p = s->next; p && p != s; p = p->next)
+        if (pthread_spin_trylock(&v->runq_lock) != 0)
         {
-            if (!p->prev) break; /* corrupted list — safety */
-            count++;
+            pthread_spin_unlock(&vic->runq_lock);
+            continue;
         }
 
-        bool ok = false;
-        if (count > 0)
+        if (!ui_runq_empty(v))
         {
-            int steal_n = count > 1 ? count / 2 : 1;
-            ui_Goro *stop = s;
-            for (int i = 0; i < steal_n; i++) stop = stop->next;
-
-            ui_Goro *batch_start = s->next;
-            ui_Goro *batch_end = stop;
-            ui_Goro *batch_prev = batch_start->prev;
-
-            batch_prev->next = batch_end->next;
-            batch_end->next->prev = batch_prev;
-
+            pthread_spin_unlock(&v->runq_lock);
             pthread_spin_unlock(&vic->runq_lock);
+            return 0;
+        }
 
-            /* Push each stolen goroutine to target's standbyq.
-             * This avoids the race of directly splicing into target runq. */
+        ui_Goro *s = &vic->runq_sentinel;
+        int count = atomic_load(&vic->runq_count);
+
+        bool ok = false;
+        if (count > 1)
+        {
+            int steal_n = count / 2;
+            ui_Goro *batch_end = s->prev;
+            ui_Goro *batch_start = batch_end;
+            for (int i = 1; i < steal_n; i++)
+                batch_start = batch_start->prev;
+
+            batch_start->prev->next = s;
+            s->prev = batch_start->prev;
+            atomic_fetch_sub(&vic->runq_count, steal_n);
+
+            ui_Goro *steal = batch_start;
+            for (;;)
             {
-                ui_Goro *steal = batch_start;
-                for (;;)
-                {
-                    ui_Goro *next = steal->next;
-                    steal->next = NULL;
-                    steal->prev = NULL;
-                    steal->home_vcpu = v->id;
-                    steal->state = UI_READY;
-                    ui_standbyq_push(v, steal);
-                    if (steal == batch_end) break;
-                    steal = next;
-                }
-                uint64_t val = 1;
-                write(v->event_fd, &val, sizeof(val));
+                ui_Goro *next = steal->next;
+                steal->next = NULL;
+                steal->prev = NULL;
+                steal->home_vcpu = v->id;
+                ui_runq_insert_locked(v, steal);
+                if (steal == batch_end) break;
+                steal = next;
             }
             ok = 1;
         }
 
-        if (!ok)
-            pthread_spin_unlock(&vic->runq_lock);
+        pthread_spin_unlock(&v->runq_lock);
+        pthread_spin_unlock(&vic->runq_lock);
         if (ok) return 1;
     }
     return 0;
@@ -366,6 +369,7 @@ ui_schedule(void)
         g->next->prev = g->prev;
         g->next = NULL;
         g->prev = NULL;
+        atomic_fetch_sub(&v->runq_count, 1);
         if (g->state == UI_READY)
             break;
         g = NULL;
@@ -677,7 +681,11 @@ static void
 ui_spawn_enqueue(ui_Goro *g)
 {
     int target;
-    if (g_ui_sched.nvcpus > 0)
+    ui_vCPU *cur = ui_this_vcpu;
+
+    if (cur && cur->current)
+        target = cur->id;
+    else if (g_ui_sched.nvcpus > 0)
     {
         int n = atomic_fetch_add(&g_ui_sched.next_vcpu, 1);
         if (n < 0) n = -n;
@@ -691,6 +699,12 @@ ui_spawn_enqueue(ui_Goro *g)
     ui_runq_insert(&g_ui_sched.vcpus[target], g);
     uint64_t val = 1;
     write(g_ui_sched.vcpus[target].event_fd, &val, sizeof(val));
+    if (cur && cur->current && g_ui_sched.nvcpus > 1)
+    {
+        int peer = (target + 1) % g_ui_sched.nvcpus;
+        if (peer != target)
+            write(g_ui_sched.vcpus[peer].event_fd, &val, sizeof(val));
+    }
 }
 
 uint64_t ui_Go(ui_Func0 f) { return ui_GoSized(f, 0); }
@@ -802,7 +816,7 @@ ui_vcpu_idle(ui_vCPU *v)
     uint64_t now = ui_now_us();
     ui_sleepq_expire(v, now);
     if (!ui_runq_empty(v)) return;
-    (void)ui_steal_work;
+    if (ui_steal_work(v)) return;
 
     if (v->uring_pending > 0) {
         ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
@@ -811,14 +825,20 @@ ui_vcpu_idle(ui_vCPU *v)
     }
 
     /* Block on eventfd until timeout or wakeup */
-    struct timespec ts = { .tv_sec = 0, .tv_nsec = 100 * 1000000 }; /* 100ms default */
+    uint64_t wait_us = 100000; /* 100ms default */
+    if (atomic_load(&g_ui_sched.active_count) > 0)
+        wait_us = 1000; /* active runtime: poll for steal every 1ms */
     if (v->sleepq_size > 0 && v->sleepq[0]->wakeup_time > now)
     {
         uint64_t delta = v->sleepq[0]->wakeup_time - now; /* microseconds */
         if (delta > 10000000) delta = 10000000; /* cap at 10s */
-        ts.tv_sec = delta / 1000000;
-        ts.tv_nsec = (long)(delta % 1000000) * 1000;
+        if (delta < wait_us)
+            wait_us = delta;
     }
+    struct timespec ts = {
+        .tv_sec = (time_t)(wait_us / 1000000),
+        .tv_nsec = (long)(wait_us % 1000000) * 1000,
+    };
     struct pollfd pfds[2];
     nfds_t nfds = 1;
     pfds[0] = (struct pollfd){ .fd = v->event_fd, .events = POLLIN };
