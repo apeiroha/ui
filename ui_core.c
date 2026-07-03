@@ -302,7 +302,7 @@ ui_steal_work(ui_vCPU *v)
         int count = atomic_load(&vic->runq_count);
 
         bool ok = false;
-        if (count > 1)
+        if (count > 2)
         {
             int steal_n = count / 2;
             ui_Goro *batch_end = s->prev;
@@ -363,17 +363,22 @@ ui_goro_recycle(ui_Goro *cg)
     ui_vCPU *v = ui_get_vcpu();
 
     /* 1. Try per-vCPU pool (no lock) */
-    if (v && v->goro_pool_count < 16)
+    if (v && v->goro_pool_count < UI_LOCAL_GORO_POOL_SIZE)
     {
-        ui_stack_madvise_dontneed(cg);
+        if (g_ui_sched.release_stacks_on_recycle)
+            ui_stack_madvise_dontneed(cg);
         void *sb = cg->stack_base;
         size_t sr = cg->stack_reserve;
         size_t sc = cg->stack_committed;
+        ui_StackArena *sa = cg->stack_arena;
+        int    ss = cg->stack_slot;
         int    ps = cg->page_size;
         memset(cg, 0, sizeof(ui_Goro));
         cg->stack_base = sb;
         cg->stack_reserve = sr;
         cg->stack_committed = sc;
+        cg->stack_arena = sa;
+        cg->stack_slot = ss;
         cg->page_size = ps;
         cg->sleepq_idx = -1;
         v->goro_pool[v->goro_pool_count] = cg;
@@ -387,15 +392,20 @@ ui_goro_recycle(ui_Goro *cg)
     pthread_mutex_lock(&g_ui_sched.goro_pool_lock);
     if (g_ui_sched.goro_pool_count < UI_GORO_POOL_SIZE)
     {
-        ui_stack_madvise_dontneed(cg);
+        if (g_ui_sched.release_stacks_on_recycle)
+            ui_stack_madvise_dontneed(cg);
         void *sb = cg->stack_base;
         size_t sr = cg->stack_reserve;
         size_t sc = cg->stack_committed;
+        ui_StackArena *sa = cg->stack_arena;
+        int    ss = cg->stack_slot;
         int    ps = cg->page_size;
         memset(cg, 0, sizeof(ui_Goro));
         cg->stack_base = sb;
         cg->stack_reserve = sr;
         cg->stack_committed = sc;
+        cg->stack_arena = sa;
+        cg->stack_slot = ss;
         cg->page_size = ps;
         cg->sleepq_idx = -1;
         g_ui_sched.goro_pool[g_ui_sched.goro_pool_count] = cg;
@@ -578,6 +588,7 @@ ui_Init(void)
     memset(&g_ui_sched, 0, sizeof(g_ui_sched));
     pthread_mutex_init(&g_ui_sched.global_lock, NULL);
     pthread_mutex_init(&g_ui_sched.goro_pool_lock, NULL);
+    pthread_mutex_init(&g_ui_sched.stack_arena_lock, NULL);
     if (ui_setup_signal_handler() < 0) return -1;
     int ncpus = (int)sysconf(_SC_NPROCESSORS_ONLN);
     if (ncpus < 1) ncpus = 1;
@@ -585,6 +596,8 @@ ui_Init(void)
     /* Allow override via environment for testing */
     const char *env_ncpus = getenv("UI_NVCPUS");
     if (env_ncpus) { int n = atoi(env_ncpus); if (n >= 1 && n <= UI_MAX_VCPUS) ncpus = n; }
+    const char *env_release = getenv("UI_STACK_RELEASE_ON_RECYCLE");
+    g_ui_sched.release_stacks_on_recycle = env_release && atoi(env_release) != 0;
     g_ui_sched.nvcpus = ncpus;
     atomic_store(&g_ui_sched.next_vcpu, 0);
     g_ui_sched.vcpus = calloc((size_t)ncpus, sizeof(ui_vCPU));
@@ -602,8 +615,8 @@ ui_Init(void)
         atomic_store(&v->running, 1);
         v->rng_state = (uint32_t)(i * 0x9E3779B9 + 1);
     }
-    /* Pre-allocate goros+stacks into the pool */
-    for (int i = 0; i < UI_GORO_POOL_SIZE; i++)
+    /* Pre-allocate a small warm pool; grow the cache lazily under load. */
+    for (int i = 0; i < UI_GORO_PREALLOC; i++)
     {
         ui_Goro *g = calloc(1, sizeof(ui_Goro));
         if (!g) break;
@@ -620,6 +633,7 @@ void
 ui_Fini(void)
 {
     if (!g_ui_sched.initialized) return;
+    g_ui_sched.finalizing = 1;
     for (int i = 0; i < g_ui_sched.nvcpus; i++)
     {
         atomic_store(&g_ui_sched.vcpus[i].running, 0);
@@ -651,6 +665,8 @@ ui_Fini(void)
         free(g_ui_sched.goro_pool[i]);
     }
     g_ui_sched.goro_pool_count = 0;
+    ui_stack_arenas_destroy();
+    pthread_mutex_destroy(&g_ui_sched.stack_arena_lock);
     pthread_mutex_destroy(&g_ui_sched.goro_pool_lock);
     ui_teardown_signal_handler();
     free(g_ui_sched.vcpus);
@@ -748,6 +764,8 @@ ui_spawn_enqueue(ui_Goro *g)
 
     if (cur && cur->current)
         target = cur->id;
+    else if (!atomic_load(&g_ui_sched.started))
+        target = 0;
     else if (g_ui_sched.nvcpus > 0)
     {
         int n = atomic_fetch_add(&g_ui_sched.next_vcpu, 1);

@@ -60,6 +60,7 @@ void
 ui_Run(void)
 {
     if (g_ui_sched.nvcpus == 0) return;
+    atomic_store(&g_ui_sched.started, 1);
     g_ui_sched.vcpus[0].thread = pthread_self();
     ui_this_vcpu = &g_ui_sched.vcpus[0];
     for (int i = 1; i < g_ui_sched.nvcpus; i++)
@@ -75,4 +76,5 @@ ui_Run(void)
         write(g_ui_sched.vcpus[i].event_fd, &val, sizeof(val));
         pthread_join(g_ui_sched.vcpus[i].thread, NULL);
     }
+    atomic_store(&g_ui_sched.started, 0);
 }

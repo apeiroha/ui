@@ -22,7 +22,9 @@
 #define UI_STACK_INIT       (128 * 1024)
 #define UI_RUNQ_CAP         256
 #define UI_MAX_VCPUS        64
-#define UI_GORO_POOL_SIZE   256  /* pre-alloc goros + stacks per process */
+#define UI_GORO_PREALLOC    256    /* pre-alloc goros + stacks per process */
+#define UI_GORO_POOL_SIZE   16384  /* max cached goros + stacks per process */
+#define UI_LOCAL_GORO_POOL_SIZE 2048
 
 enum
 {
@@ -34,6 +36,7 @@ enum
 
 typedef struct ui_Goro ui_Goro;
 typedef struct ui_WaitNode ui_WaitNode;
+typedef struct ui_StackArena ui_StackArena;
 
 struct ui_WaitNode
 {
@@ -51,6 +54,8 @@ struct ui_Goro
     void     *stack_base;
     size_t    stack_reserve;
     size_t    stack_committed;
+    ui_StackArena *stack_arena;
+    int       stack_slot;
     int       page_size;
 
     ui_Func0  entry;
@@ -89,7 +94,7 @@ typedef struct
     pthread_spinlock_t runq_lock;
     atomic_int       runq_count;
     /* Per-vCPU goro pool (only accessed by this vCPU = no lock) */
-    ui_Goro         *goro_pool[16];
+    ui_Goro         *goro_pool[UI_LOCAL_GORO_POOL_SIZE];
     int              goro_pool_count;
     atomic_int       idle;
     int              event_fd;
@@ -125,6 +130,7 @@ typedef struct
 {
     ui_vCPU         *vcpus;
     int              nvcpus;
+    atomic_int       started;
     atomic_int       active_count;
     atomic_int       next_vcpu;
     pthread_mutex_t  global_lock;
@@ -133,10 +139,14 @@ typedef struct
     ui_Goro         *goro_pool[UI_GORO_POOL_SIZE];
     int              goro_pool_count;
     pthread_mutex_t  goro_pool_lock;
+    ui_StackArena   *stack_arenas;
+    pthread_mutex_t  stack_arena_lock;
 
     struct sigaction old_sigsegv;
     stack_t          old_altstack;
     int              initialized;
+    int              finalizing;
+    int              release_stacks_on_recycle;
 } ui_Sched;
 
 extern ui_Sched g_ui_sched;
@@ -158,6 +168,7 @@ void          ui_goro_exit(void);
 int           ui_stack_init(ui_Goro *g, int stack_size);
 void          ui_stack_destroy(ui_Goro *g);
 void          ui_stack_madvise_dontneed(ui_Goro *g);
+void          ui_stack_arenas_destroy(void);
 int           ui_stack_grow(ui_Goro *g, void *fault_addr);
 void         *ui_stack_bottom(ui_Goro *g);
 
