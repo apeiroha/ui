@@ -8,10 +8,20 @@
 #   rdi = pointer to save current RSP into
 #   rsi = VALUE of new RSP to load
 ui_switch:
+    pushq %r15
+    pushq %r14
+    pushq %r13
+    pushq %r12
+    pushq %rbx
     pushq %rbp
     movq  %rsp, (%rdi)
     movq  %rsi, %rsp
     popq  %rbp
+    popq  %rbx
+    popq  %r12
+    popq  %r13
+    popq  %r14
+    popq  %r15
     retq
 
 # void ui_switch_defer(void **from_rsp, void *to_rsp,
@@ -25,10 +35,20 @@ ui_switch:
 # When defer_fn returns (ret), it returns to whoever called
 # ui_switch on the target stack.
 ui_switch_defer:
+    pushq %r15
+    pushq %r14
+    pushq %r13
+    pushq %r12
+    pushq %rbx
     pushq %rbp
     movq  %rsp, (%rdi)
     movq  %rsi, %rsp
     popq  %rbp
+    popq  %rbx
+    popq  %r12
+    popq  %r13
+    popq  %r14
+    popq  %r15
     movq  %rcx, %rdi
     jmp   *%rdx
 
@@ -36,6 +56,11 @@ ui_switch_defer:
 #   rdi = pointer to scheduler's RSP save location (v->sched_rsp_ptr)
 #   rsi = new RSP to load (g->rsp)
 ui_first_switch:
+    pushq %r15
+    pushq %r14
+    pushq %r13
+    pushq %r12
+    pushq %rbx
     pushq %rbp
     movq  %rsp, (%rdi)
     movq  %rsi, %rsp
@@ -52,4 +77,5 @@ ui_first_switch:
 ui_trampoline:
     movq  %r12, %rdi
     callq *%rbx
-    jmp   ui_goro_exit
+    callq ui_goro_exit
+    ud2

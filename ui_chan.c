@@ -2,6 +2,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 typedef struct ui_Chan ui_Chan;
 
@@ -23,21 +24,7 @@ struct ui_Chan
 static ui_vCPU *
 ui_get_vcpu(void)
 {
-    pthread_t self = pthread_self();
-    for (int i = 0; i < g_ui_sched.nvcpus; i++)
-    {
-        if (pthread_equal(g_ui_sched.vcpus[i].thread, self))
-            return &g_ui_sched.vcpus[i];
-    }
-    return NULL;
-}
-
-static void
-ui_wait(ui_Goro *g)
-{
-    g->state = UI_WAITING;
-    ui_vCPU *v = ui_get_vcpu();
-    if (v) ui_switch(&g->rsp, v->sched_rsp);
+    return ui_this_vcpu;
 }
 
 uint64_t
@@ -46,10 +33,10 @@ ui_NewChan(size_t elem_size, unsigned int buf_cap)
     ui_Chan *c = calloc(1, sizeof(ui_Chan));
     if (!c) return 0;
 
-    if (buf_cap == 0) buf_cap = 1;
+    if (buf_cap == 0) buf_cap = 1; /* rendezvous is approximated as capacity 1 */
 
     c->elem_size = elem_size;
-    c->cap = buf_cap + 1;
+    c->cap = buf_cap;
     c->buf = calloc(c->cap, elem_size);
     if (!c->buf) { free(c); return 0; }
 
@@ -90,7 +77,6 @@ ui_ChanSend(uint64_t ch, const void *val)
             ui_waitq_push(&c->send_wait, g);
             pthread_spin_unlock(&c->lock);
             ui_switch(&g->rsp, v->sched_rsp);
-            if (c->closed) return;
         }
     }
 }
@@ -220,15 +206,22 @@ ui_ChanFree(uint64_t ch)
 
 // ── Timer Channel ──
 
-static uint64_t _ui_timer_ch;
+typedef struct
+{
+    uint64_t ch;
+    unsigned int us;
+} ui_TimerArg;
 
 static void
 _ui_timer_proc(uintptr_t arg)
 {
-    unsigned int us = (unsigned int)arg;
+    ui_TimerArg *ta = (ui_TimerArg *)(uintptr_t)arg;
+    uint64_t ch = ta->ch;
+    unsigned int us = ta->us;
+    free(ta);
     ui_SleepUs(us);
     uint64_t val = 1;
-    ui_ChanSend(_ui_timer_ch, &val);
+    ui_ChanSend(ch, &val);
 }
 
 uint64_t
@@ -240,9 +233,17 @@ ui_NewTimer(unsigned int ms)
 uint64_t
 ui_NewTimerUs(unsigned int us)
 {
-    _ui_timer_ch = ui_NewChan(sizeof(uint64_t), 1);
-    ui_Go1Sized(_ui_timer_proc, (uintptr_t)us, 0);
-    return _ui_timer_ch;
+    uint64_t ch = ui_NewChan(sizeof(uint64_t), 1);
+    if (!ch) return 0;
+    ui_TimerArg *ta = malloc(sizeof(*ta));
+    if (!ta) {
+        ui_ChanFree(ch);
+        return 0;
+    }
+    ta->ch = ch;
+    ta->us = us;
+    ui_Go1Sized(_ui_timer_proc, (uintptr_t)ta, 0);
+    return ch;
 }
 
 void
@@ -260,72 +261,202 @@ ui_TimerReset(uint64_t old_ch, unsigned int new_us)
     return ui_NewTimerUs(new_us);
 }
 
+typedef struct
+{
+    atomic_int fired;
+} ui_SelectCtx;
+
+static void
+ui_select_wake(ui_WaitNode *n)
+{
+    ui_SelectCtx *ctx = (ui_SelectCtx *)n->data;
+    if (!ctx) return;
+    if (atomic_exchange_explicit(&ctx->fired, 1, memory_order_acq_rel) == 0)
+        ui_wakeup(n->g);
+}
+
+static int
+ui_select_try_recv(ui_Chan *c, void *buf)
+{
+    if (c->count > 0)
+    {
+        unsigned pos = c->read_idx % c->cap;
+        if (buf)
+            memcpy(buf, (char *)c->buf + pos * c->elem_size, c->elem_size);
+        c->read_idx++;
+        c->count--;
+        ui_waitq_wake_one(&c->send_wait);
+        return 1;
+    }
+    if (c->closed)
+    {
+        if (buf) memset(buf, 0, c->elem_size);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+ui_select_try_send(ui_Chan *c, const void *val)
+{
+    if (c->count < c->cap && !c->closed)
+    {
+        unsigned pos = c->write_idx % c->cap;
+        memcpy((char *)c->buf + pos * c->elem_size, val, c->elem_size);
+        c->write_idx++;
+        c->count++;
+        ui_waitq_wake_one(&c->recv_wait);
+        return 1;
+    }
+    return 0;
+}
+
+static void
+ui_select_cleanup(const uint64_t *recv_chs, const uint64_t *send_chs,
+                  ui_WaitNode *nodes, int nrecv, int nsend)
+{
+    for (int i = 0; i < nrecv; i++)
+    {
+        if (!nodes[i].active) continue;
+        ui_Chan *c = (ui_Chan *)(uintptr_t)recv_chs[i];
+        pthread_spin_lock(&c->lock);
+        ui_waitq_remove_node(&c->recv_wait, &nodes[i]);
+        pthread_spin_unlock(&c->lock);
+    }
+    for (int i = 0; i < nsend; i++)
+    {
+        int ni = nrecv + i;
+        if (!nodes[ni].active) continue;
+        ui_Chan *c = (ui_Chan *)(uintptr_t)send_chs[i];
+        pthread_spin_lock(&c->lock);
+        ui_waitq_remove_node(&c->send_wait, &nodes[ni]);
+        pthread_spin_unlock(&c->lock);
+    }
+}
+
 int
 ui_SelectWait(const uint64_t *recv_chs, void **recv_bufs,
               const uint64_t *send_chs, const void **send_vals,
               int nrecv, int nsend, int timeout_ms)
 {
+    int total = nrecv + nsend;
+    if (total <= 0)
+    {
+        if (timeout_ms == 0) return -1;
+        if (timeout_ms > 0) ui_Sleep((unsigned)timeout_ms);
+        else for (;;) ui_Sleep(1000);
+        return -1;
+    }
+
+    ui_vCPU *v = ui_get_vcpu();
+    ui_Goro *g = v ? v->current : NULL;
+    uint64_t deadline = 0;
+    if (timeout_ms > 0)
+        deadline = ui_now_us() + (uint64_t)timeout_ms * 1000;
+
     for (;;)
     {
-        /* Scan all recv channels under each channel's lock */
         for (int i = 0; i < nrecv; i++)
         {
             ui_Chan *c = (ui_Chan *)(uintptr_t)recv_chs[i];
             pthread_spin_lock(&c->lock);
-            if (c->count > 0)
-            {
-                unsigned pos = c->read_idx % c->cap;
-                if (recv_bufs[i])
-                    memcpy(recv_bufs[i], (char *)c->buf + pos * c->elem_size, c->elem_size);
-                c->read_idx++;
-                c->count--;
-                ui_waitq_wake_one(&c->send_wait);
-                pthread_spin_unlock(&c->lock);
-                return i;
-            }
-            if (c->closed)
-            {
-                pthread_spin_unlock(&c->lock);
-                if (recv_bufs[i]) memset(recv_bufs[i], 0, c->elem_size);
-                return i;
-            }
+            int ok = ui_select_try_recv(c, recv_bufs ? recv_bufs[i] : NULL);
             pthread_spin_unlock(&c->lock);
+            if (ok) return i;
         }
 
-        /* Scan all send channels under each channel's lock */
         for (int i = 0; i < nsend; i++)
         {
             ui_Chan *c = (ui_Chan *)(uintptr_t)send_chs[i];
             pthread_spin_lock(&c->lock);
-            if (c->count < c->cap - 1 && !c->closed)
-            {
-                unsigned pos = c->write_idx % c->cap;
-                memcpy((char *)c->buf + pos * c->elem_size, send_vals[i], c->elem_size);
-                c->write_idx++;
-                c->count++;
-                ui_waitq_wake_one(&c->recv_wait);
-                pthread_spin_unlock(&c->lock);
-                return nrecv + i;
-            }
+            int ok = ui_select_try_send(c, send_vals[i]);
             pthread_spin_unlock(&c->lock);
+            if (ok) return nrecv + i;
         }
 
-        /* Nothing ready. timeout=0 means non-blocking */
         if (timeout_ms == 0)
             return -1;
 
-        /* Yield and retry (polite poll). A proper blocking select
-         * would register on all waitqs, but wq_prev/wq_next are
-         * shared fields — a goroutine can only be in one waitq at a
-         * time.  The yield gives other goroutines a chance to make
-         * progress, then we retry. */
-        ui_Yield();
-
         if (timeout_ms > 0)
         {
-            timeout_ms -= 10;
-            if (timeout_ms <= 0)
+            uint64_t now = ui_now_us();
+            if (now >= deadline)
                 return -1;
         }
+
+        if (!v || !g)
+        {
+            ui_Yield();
+            continue;
+        }
+
+        ui_SelectCtx ctx;
+        atomic_init(&ctx.fired, 0);
+        ui_WaitNode *nodes = calloc((size_t)total, sizeof(*nodes));
+        if (!nodes)
+            return -1;
+
+        for (int i = 0; i < total; i++)
+        {
+            nodes[i].g = g;
+            nodes[i].wake = ui_select_wake;
+            nodes[i].data = &ctx;
+        }
+
+        for (int i = 0; i < nrecv; i++)
+        {
+            ui_Chan *c = (ui_Chan *)(uintptr_t)recv_chs[i];
+            pthread_spin_lock(&c->lock);
+            if (ui_select_try_recv(c, recv_bufs ? recv_bufs[i] : NULL))
+            {
+                pthread_spin_unlock(&c->lock);
+                ui_select_cleanup(recv_chs, send_chs, nodes, nrecv, nsend);
+                free(nodes);
+                return i;
+            }
+            ui_waitq_push_node(&c->recv_wait, &nodes[i]);
+            pthread_spin_unlock(&c->lock);
+        }
+
+        for (int i = 0; i < nsend; i++)
+        {
+            int ni = nrecv + i;
+            ui_Chan *c = (ui_Chan *)(uintptr_t)send_chs[i];
+            pthread_spin_lock(&c->lock);
+            if (ui_select_try_send(c, send_vals[i]))
+            {
+                pthread_spin_unlock(&c->lock);
+                ui_select_cleanup(recv_chs, send_chs, nodes, nrecv, nsend);
+                free(nodes);
+                return ni;
+            }
+            ui_waitq_push_node(&c->send_wait, &nodes[ni]);
+            pthread_spin_unlock(&c->lock);
+        }
+
+        g->state = UI_WAITING;
+        if (timeout_ms > 0)
+        {
+            uint64_t now = ui_now_us();
+            if (now >= deadline ||
+                ui_sleepq_push(v, g, deadline) != 0)
+            {
+                g->state = UI_READY;
+                ui_select_cleanup(recv_chs, send_chs, nodes, nrecv, nsend);
+                free(nodes);
+                if (now >= deadline) return -1;
+                ui_Yield();
+                continue;
+            }
+        }
+
+        ui_switch(&g->rsp, v->sched_rsp);
+
+        ui_select_cleanup(recv_chs, send_chs, nodes, nrecv, nsend);
+        free(nodes);
+
+        if (timeout_ms > 0 && atomic_load_explicit(&ctx.fired, memory_order_acquire) == 0 &&
+            ui_now_us() >= deadline)
+            return -1;
     }
 }

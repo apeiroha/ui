@@ -37,6 +37,8 @@ ui_runq_insert(ui_vCPU *v, ui_Goro *g)
 static void
 ui_runq_insert_locked(ui_vCPU *v, ui_Goro *g)
 {
+    if (g->state != UI_READY)
+        return;
     if (g->prev != NULL)
     {
         return;
@@ -85,10 +87,10 @@ ui_standbyq_init(ui_vCPU *v)
 void
 ui_standbyq_push(ui_vCPU *v, ui_Goro *g)
 {
-    g->prev = NULL;
+    g->standby_next = NULL;
     pthread_spin_lock(&v->standbyq_lock);
     if (v->standbyq_tail)
-        v->standbyq_tail->prev = g;
+        v->standbyq_tail->standby_next = g;
     else
         v->standbyq_head = g;
     v->standbyq_tail = g;
@@ -108,12 +110,14 @@ ui_drain_standbyq(ui_vCPU *v)
 
     while (head)
     {
-        ui_Goro *next = head->prev;
-        head->prev = NULL;
-        head->state = UI_READY;
-        if (head->sleepq_idx >= 0)
-            ui_sleepq_remove(v, head);
-        ui_runq_insert(v, head);
+        ui_Goro *next = head->standby_next;
+        head->standby_next = NULL;
+        if (head->state == UI_READY)
+        {
+            if (head->sleepq_idx >= 0)
+                ui_sleepq_remove(v, head);
+            ui_runq_insert(v, head);
+        }
         head = next;
     }
 }
@@ -307,7 +311,8 @@ ui_steal_work(ui_vCPU *v)
             ok = 1;
         }
 
-        pthread_spin_unlock(&vic->runq_lock);
+        if (!ok)
+            pthread_spin_unlock(&vic->runq_lock);
         if (ok) return 1;
     }
     return 0;
@@ -337,6 +342,8 @@ ui_schedule(void)
     /* Expire sleepers so they become runnable (needed here, not just in idle
      * loop, to avoid deadlock when sleepq is full and no goroutine goes idle). */
     ui_sleepq_expire(v, ui_now_us());
+    if (v->uring_pending > 0)
+        ui_uring_drain(v);
 
     ui_Goro *g = NULL;
     ui_Goro *cg = v->current;
@@ -348,17 +355,27 @@ ui_schedule(void)
     if (cg && cg->state == UI_READY)
         ui_runq_insert_locked(v, cg);
 
-    g = v->runq_sentinel.next;
-    if (g != &v->runq_sentinel && g->prev && g->next)
+    while ((g = v->runq_sentinel.next) != &v->runq_sentinel)
     {
+        if (!g->prev || !g->next)
+        {
+            g = NULL;
+            break;
+        }
         g->prev->next = g->next;
         g->next->prev = g->prev;
         g->next = NULL;
         g->prev = NULL;
-    }
-    else
-    {
+        if (g->state == UI_READY)
+            break;
         g = NULL;
+    }
+    if (g == &v->runq_sentinel)
+        g = NULL;
+
+    if (!g)
+    {
+        /* no READY goroutine */
     }
 
     pthread_spin_unlock(&v->runq_lock);
@@ -394,7 +411,7 @@ ui_schedule(void)
                 {
                     ui_stack_destroy(cg);
                     pthread_mutex_lock(&g_ui_sched.free_lock);
-                    cg->wq_next = g_ui_sched.free_list;
+                    cg->free_next = g_ui_sched.free_list;
                     g_ui_sched.free_list = cg;
                     pthread_mutex_unlock(&g_ui_sched.free_lock);
                 }
@@ -444,7 +461,7 @@ ui_schedule(void)
                 {
                     ui_stack_destroy(cg);
                     pthread_mutex_lock(&g_ui_sched.free_lock);
-                    cg->wq_next = g_ui_sched.free_list;
+                    cg->free_next = g_ui_sched.free_list;
                     g_ui_sched.free_list = cg;
                     pthread_mutex_unlock(&g_ui_sched.free_lock);
                 }
@@ -514,6 +531,10 @@ ui_teardown_signal_handler(void)
     sigaction(SIGSEGV, &g_ui_sched.old_sigsegv, NULL);
     if (g_ui_sched.old_altstack.ss_sp)
     {
+        stack_t disabled;
+        memset(&disabled, 0, sizeof(disabled));
+        disabled.ss_flags = SS_DISABLE;
+        sigaltstack(&disabled, NULL);
         munmap(g_ui_sched.old_altstack.ss_sp, g_ui_sched.old_altstack.ss_size);
         memset(&g_ui_sched.old_altstack, 0, sizeof(g_ui_sched.old_altstack));
     }
@@ -534,12 +555,14 @@ ui_Init(void)
     const char *env_ncpus = getenv("UI_NVCPUS");
     if (env_ncpus) { int n = atoi(env_ncpus); if (n >= 1 && n <= UI_MAX_VCPUS) ncpus = n; }
     g_ui_sched.nvcpus = ncpus;
+    atomic_store(&g_ui_sched.next_vcpu, 0);
     g_ui_sched.vcpus = calloc((size_t)ncpus, sizeof(ui_vCPU));
     if (!g_ui_sched.vcpus) { ui_teardown_signal_handler(); return -1; }
     for (int i = 0; i < ncpus; i++)
     {
         ui_vCPU *v = &g_ui_sched.vcpus[i];
         v->id = i;
+        v->ring_fd = -1;
         v->event_fd = eventfd(0, EFD_NONBLOCK);
         pthread_spin_init(&v->runq_lock, PTHREAD_PROCESS_PRIVATE);
         ui_runq_init(v);
@@ -560,12 +583,21 @@ ui_Fini(void)
         atomic_store(&g_ui_sched.vcpus[i].running, 0);
         if (g_ui_sched.vcpus[i].event_fd >= 0)
             close(g_ui_sched.vcpus[i].event_fd);
+        if (g_ui_sched.vcpus[i].sq_ring_ptr)
+            munmap(g_ui_sched.vcpus[i].sq_ring_ptr, g_ui_sched.vcpus[i].sq_ring_size);
+        if (g_ui_sched.vcpus[i].cq_ring_ptr)
+            munmap(g_ui_sched.vcpus[i].cq_ring_ptr, g_ui_sched.vcpus[i].cq_ring_size);
+        if (g_ui_sched.vcpus[i].sq_sqes)
+            munmap(g_ui_sched.vcpus[i].sq_sqes, g_ui_sched.vcpus[i].sqes_size);
+        if (g_ui_sched.vcpus[i].ring_fd >= 0)
+            close(g_ui_sched.vcpus[i].ring_fd);
     }
     ui_teardown_signal_handler();
     free(g_ui_sched.vcpus);
     g_ui_sched.vcpus = NULL;
     g_ui_sched.nvcpus = 0;
     g_ui_sched.initialized = 0;
+    ui_this_vcpu = NULL;
 }
 
 static void
@@ -601,7 +633,7 @@ ui_goro_alloc(ui_Func0 entry, void *arg, int stack_size)
     {
         pthread_mutex_lock(&g_ui_sched.free_lock);
         g = g_ui_sched.free_list;
-        if (g) g_ui_sched.free_list = g->wq_next;
+        if (g) g_ui_sched.free_list = g->free_next;
         pthread_mutex_unlock(&g_ui_sched.free_lock);
     }
 
@@ -625,6 +657,10 @@ ui_goro_alloc(ui_Func0 entry, void *arg, int stack_size)
     g->first_run = 1;
     g->sleepq_idx = -1;
     g->io_pending = 0;
+    g->wait_node.active = 0;
+    g->wait_node.g = NULL;
+    g->free_next = NULL;
+    g->standby_next = NULL;
     return g;
 }
 
@@ -640,11 +676,21 @@ ui_goro_exit(void)
 static void
 ui_spawn_enqueue(ui_Goro *g)
 {
-    g->home_vcpu = ui_get_vcpu_id();
+    int target;
+    if (g_ui_sched.nvcpus > 0)
+    {
+        int n = atomic_fetch_add(&g_ui_sched.next_vcpu, 1);
+        if (n < 0) n = -n;
+        target = n % g_ui_sched.nvcpus;
+    }
+    else
+        target = 0;
+
+    g->home_vcpu = target;
     atomic_fetch_add(&g_ui_sched.active_count, 1);
-    ui_runq_insert(&g_ui_sched.vcpus[g->home_vcpu], g);
+    ui_runq_insert(&g_ui_sched.vcpus[target], g);
     uint64_t val = 1;
-    write(g_ui_sched.vcpus[g->home_vcpu].event_fd, &val, sizeof(val));
+    write(g_ui_sched.vcpus[target].event_fd, &val, sizeof(val));
 }
 
 uint64_t ui_Go(ui_Func0 f) { return ui_GoSized(f, 0); }
@@ -724,13 +770,13 @@ void
 ui_wakeup(ui_Goro *g)
 {
     if (!g) return;
+    if (!__sync_bool_compare_and_swap(&g->state, UI_WAITING, UI_READY))
+        return;
 
     int target = g->home_vcpu;
     if (target < 0 || target >= g_ui_sched.nvcpus) target = 0;
 
     ui_vCPU *v_target = &g_ui_sched.vcpus[target];
-
-    g->state = UI_READY;
 
     /* Same-vCPU: remove from sleepq and insert directly into runq.
      * Cross-vCPU: push to standbyq (avoids cross-vCPU runq race AND
@@ -756,29 +802,13 @@ ui_vcpu_idle(ui_vCPU *v)
     uint64_t now = ui_now_us();
     ui_sleepq_expire(v, now);
     if (!ui_runq_empty(v)) return;
-    if (ui_steal_work(v)) return;
+    (void)ui_steal_work;
 
-        /* Drain any pending io_uring completions */
-        if (v->ring_fd > 0) {
-            /* Flush deferred completions (IORING_SETUP_DEFER_TASKRUN) */
-            ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
-            unsigned ch = *v->cq_head, ct = *v->cq_tail, cm = *v->cq_ring_mask;
-            while (ch != ct) {
-                struct io_uring_cqe *cqe = &v->cq_cqes[ch & cm];
-                if (cqe->user_data != 0) {
-                    ui_Goro *g = (ui_Goro *)(uintptr_t)cqe->user_data;
-                    g->io_result = cqe->res;
-                    g->io_pending = 0;
-                    g->state = UI_READY;
-                    ui_runq_insert(v, g);
-                    v->uring_pending--;
-                }
-                ch++;
-            }
-            *v->cq_head = ch;
-            __sync_synchronize();
-            if (!ui_runq_empty(v)) return;
-        }
+    if (v->uring_pending > 0) {
+        ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
+        ui_uring_drain(v);
+        if (!ui_runq_empty(v)) return;
+    }
 
     /* Block on eventfd until timeout or wakeup */
     struct timespec ts = { .tv_sec = 0, .tv_nsec = 100 * 1000000 }; /* 100ms default */
@@ -789,9 +819,17 @@ ui_vcpu_idle(ui_vCPU *v)
         ts.tv_sec = delta / 1000000;
         ts.tv_nsec = (long)(delta % 1000000) * 1000;
     }
-    struct pollfd pfd = { .fd = v->event_fd, .events = POLLIN };
-    int ret = ppoll(&pfd, 1, &ts, NULL);
-    if (ret > 0 && (pfd.revents & POLLIN))
-    { uint64_t val; read(v->event_fd, &val, sizeof(val)); }
-}
+    struct pollfd pfds[2];
+    nfds_t nfds = 1;
+    pfds[0] = (struct pollfd){ .fd = v->event_fd, .events = POLLIN };
+    if (v->ring_fd >= 0 && v->uring_pending > 0)
+        pfds[nfds++] = (struct pollfd){ .fd = v->ring_fd, .events = POLLIN };
 
+    int ret = ppoll(pfds, nfds, &ts, NULL);
+    if (ret > 0) {
+        if (pfds[0].revents & POLLIN)
+        { uint64_t val; read(v->event_fd, &val, sizeof(val)); }
+        if (nfds > 1 && (pfds[1].revents & POLLIN))
+            ui_uring_drain(v);
+    }
+}

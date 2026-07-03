@@ -30,13 +30,7 @@ typedef struct
 static ui_vCPU *
 ui_get_vcpu(void)
 {
-    pthread_t self = pthread_self();
-    for (int i = 0; i < g_ui_sched.nvcpus; i++)
-    {
-        if (pthread_equal(g_ui_sched.vcpus[i].thread, self))
-            return &g_ui_sched.vcpus[i];
-    }
-    return NULL;
+    return ui_this_vcpu;
 }
 
 uint64_t
@@ -116,6 +110,7 @@ ui_MutexFree(uint64_t mh)
 
 typedef struct
 {
+    atomic_int splock;
     ui_WaitQ waitq;
 } ui_cond;
 
@@ -134,6 +129,13 @@ ui_CondWait(uint64_t ch, uint64_t mh)
     ui_mutex *m = (ui_mutex *)(uintptr_t)mh;
     if (!c || !m) return;
 
+    ui_vCPU *v = ui_get_vcpu();
+    if (!v || !v->current) return;
+    ui_Goro *g = v->current;
+
+    /* Queue on the cond before releasing the mutex to avoid lost wakeups. */
+    spin_lock(&c->splock);
+
     /* Release mutex (under its spinlock to prevent race) */
     spin_lock(&m->splock);
     m->locked = 0;
@@ -141,15 +143,10 @@ ui_CondWait(uint64_t ch, uint64_t mh)
         ui_waitq_wake_one(&m->waitq);
     spin_unlock(&m->splock);
 
-    /* Block on cond */
-    {
-        ui_vCPU *v = ui_get_vcpu();
-        if (!v || !v->current) return;
-        ui_Goro *g = v->current;
-        g->state = UI_WAITING;
-        ui_waitq_push(&c->waitq, g);
-        ui_switch(&g->rsp, v->sched_rsp);
-    }
+    g->state = UI_WAITING;
+    ui_waitq_push(&c->waitq, g);
+    spin_unlock(&c->splock);
+    ui_switch(&g->rsp, v->sched_rsp);
 
     /* Re-acquire mutex */
     ui_MutexLock(mh);
@@ -160,7 +157,9 @@ ui_CondSignal(uint64_t ch)
 {
     ui_cond *c = (ui_cond *)(uintptr_t)ch;
     if (!c) return;
+    spin_lock(&c->splock);
     ui_waitq_wake_one(&c->waitq);
+    spin_unlock(&c->splock);
 }
 
 void
@@ -168,7 +167,9 @@ ui_CondBroadcast(uint64_t ch)
 {
     ui_cond *c = (ui_cond *)(uintptr_t)ch;
     if (!c) return;
+    spin_lock(&c->splock);
     ui_waitq_wake_all(&c->waitq);
+    spin_unlock(&c->splock);
 }
 
 void

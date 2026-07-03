@@ -32,6 +32,17 @@ enum
 };
 
 typedef struct ui_Goro ui_Goro;
+typedef struct ui_WaitNode ui_WaitNode;
+
+struct ui_WaitNode
+{
+    ui_Goro     *g;
+    ui_WaitNode *prev;
+    ui_WaitNode *next;
+    void       (*wake)(ui_WaitNode *n);
+    void        *data;
+    int          active;
+};
 
 struct ui_Goro
 {
@@ -51,9 +62,9 @@ struct ui_Goro
     /* Intrusive circular linked list (runq) */
     ui_Goro  *prev;
     ui_Goro  *next;
-    /* Wait queue link */
-    ui_Goro  *wq_prev;
-    ui_Goro  *wq_next;
+    ui_WaitNode wait_node;
+    ui_Goro  *free_next;
+    ui_Goro  *standby_next;
 
     ui_Goro  *joiner;
 
@@ -82,6 +93,11 @@ typedef struct
     struct io_uring_sqe *sq_sqes;
     unsigned        *cq_head, *cq_tail, *cq_ring_mask, *cq_ring_entries;
     struct io_uring_cqe *cq_cqes;
+    void            *sq_ring_ptr;
+    void            *cq_ring_ptr;
+    size_t           sq_ring_size;
+    size_t           cq_ring_size;
+    size_t           sqes_size;
     int              no_sq_array;  /* IORING_SETUP_NO_SQARRAY was enabled */
     int              uring_pending;
     void            *sched_rsp;
@@ -93,8 +109,7 @@ typedef struct
     long             tick;
     uint32_t         rng_state;
     /* Standbyq — lock-protected list for cross-vCPU migration.
-     * Only the owning vCPU reads/drains; any vCPU my push.
-     * Reuses g->wq_next as the intrusive list link. */
+     * Only the owning vCPU reads/drains; any vCPU may push. */
     ui_Goro         *standbyq_head;
     ui_Goro         *standbyq_tail;
     pthread_spinlock_t standbyq_lock;
@@ -105,6 +120,7 @@ typedef struct
     ui_vCPU         *vcpus;
     int              nvcpus;
     atomic_int       active_count;
+    atomic_int       next_vcpu;
     pthread_mutex_t  global_lock;
     ui_Goro         *free_list;
     pthread_mutex_t  free_lock;
@@ -153,18 +169,20 @@ uint64_t      ui_now_us(void);
 int           ui_vcpu_ensure_ring(ui_vCPU *v);
 int           ui_uring_enter(int ring_fd, unsigned to_submit,
                              unsigned min_complete, unsigned flags);
+void          ui_uring_drain(ui_vCPU *v);
 
 /* ── Wait queue abstraction ── */
 
 typedef struct {
-    ui_Goro *head;
-    int      count;
+    ui_WaitNode *head;
+    int          count;
 } ui_WaitQ;
 
 void          ui_waitq_init(ui_WaitQ *q);
 int           ui_waitq_empty(ui_WaitQ *q);
 void          ui_waitq_push(ui_WaitQ *q, ui_Goro *g);
-void          ui_waitq_remove(ui_WaitQ *q, ui_Goro *g);
+void          ui_waitq_push_node(ui_WaitQ *q, ui_WaitNode *n);
+void          ui_waitq_remove_node(ui_WaitQ *q, ui_WaitNode *n);
 ui_Goro      *ui_waitq_pop(ui_WaitQ *q);
 ui_Goro      *ui_waitq_peek(ui_WaitQ *q);
 void          ui_waitq_wake_one(ui_WaitQ *q);

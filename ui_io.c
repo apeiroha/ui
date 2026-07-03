@@ -38,7 +38,7 @@ ui_uring_enter(int ring_fd, unsigned to_submit, unsigned min_complete,
 int
 ui_vcpu_ensure_ring(ui_vCPU *v)
 {
-    if (v->ring_fd > 0)
+    if (v->ring_fd >= 0)
         return 0;
 
     struct io_uring_params p;
@@ -60,22 +60,32 @@ ui_vcpu_ensure_ring(ui_vCPU *v)
 
     size_t sq_size = p.sq_off.array + p.sq_entries * sizeof(unsigned);
     size_t cq_size = p.cq_off.cqes + p.cq_entries * sizeof(struct io_uring_cqe);
+    size_t sqes_size = p.sq_entries * sizeof(struct io_uring_sqe);
 
-    void *sq_ptr = mmap(0, sq_size, PROT_READ | PROT_WRITE,
-                        MAP_SHARED | MAP_POPULATE, v->ring_fd,
-                        IORING_OFF_SQ_RING);
+    void *sq_ptr = MAP_FAILED;
+    void *cq_ptr = MAP_FAILED;
+
+    sq_ptr = mmap(0, sq_size, PROT_READ | PROT_WRITE,
+                  MAP_SHARED | MAP_POPULATE, v->ring_fd,
+                  IORING_OFF_SQ_RING);
     if (sq_ptr == MAP_FAILED) goto err;
 
-    void *cq_ptr = mmap(0, cq_size, PROT_READ | PROT_WRITE,
-                        MAP_SHARED | MAP_POPULATE, v->ring_fd,
-                        IORING_OFF_CQ_RING);
+    cq_ptr = mmap(0, cq_size, PROT_READ | PROT_WRITE,
+                  MAP_SHARED | MAP_POPULATE, v->ring_fd,
+                  IORING_OFF_CQ_RING);
     if (cq_ptr == MAP_FAILED) goto err;
 
-    v->sq_sqes = mmap(0, p.sq_entries * sizeof(struct io_uring_sqe),
+    v->sq_sqes = mmap(0, sqes_size,
                       PROT_READ | PROT_WRITE,
                       MAP_SHARED | MAP_POPULATE, v->ring_fd,
                       IORING_OFF_SQES);
     if (v->sq_sqes == MAP_FAILED) goto err;
+
+    v->sq_ring_ptr = sq_ptr;
+    v->cq_ring_ptr = cq_ptr;
+    v->sq_ring_size = sq_size;
+    v->cq_ring_size = cq_size;
+    v->sqes_size = sqes_size;
 
     v->sq_head = (unsigned *)(sq_ptr + p.sq_off.head);
     v->sq_tail = (unsigned *)(sq_ptr + p.sq_off.tail);
@@ -93,8 +103,14 @@ ui_vcpu_ensure_ring(ui_vCPU *v)
     return 0;
 
 err:
+    if (v->sq_sqes && v->sq_sqes != MAP_FAILED)
+        munmap(v->sq_sqes, sqes_size);
+    if (cq_ptr && cq_ptr != MAP_FAILED)
+        munmap(cq_ptr, cq_size);
+    if (sq_ptr && sq_ptr != MAP_FAILED)
+        munmap(sq_ptr, sq_size);
     if (v->ring_fd >= 0) close(v->ring_fd);
-    v->ring_fd = 0;
+    v->ring_fd = -1;
     return -1;
 }
 
@@ -135,9 +151,12 @@ ui_uring_submit(ui_vCPU *v)
 }
 
 /* Drain all available CQEs, waking goroutines */
-static void
+void
 ui_uring_drain(ui_vCPU *v)
 {
+    if (!v || v->ring_fd < 0)
+        return;
+
     unsigned head = *v->cq_head;
     unsigned tail = *v->cq_tail;
     unsigned mask = *v->cq_ring_mask;
@@ -149,9 +168,11 @@ ui_uring_drain(ui_vCPU *v)
         {
             ui_Goro *g = (ui_Goro *)(uintptr_t)cqe->user_data;
             g->io_result = cqe->res;
+            g->io_pending = 0;
             g->state = UI_READY;
             ui_runq_insert(v, g);
-            v->uring_pending--;
+            if (v->uring_pending > 0)
+                v->uring_pending--;
         }
         head++;
     }
@@ -176,8 +197,8 @@ ui_io_submit_and_wait(ui_vCPU *v, struct io_uring_sqe *sqe)
 
     while (cur->io_pending)
     {
-        cur->state = UI_READY;
-        ui_Yield();
+        cur->state = UI_WAITING;
+        ui_switch(&cur->rsp, v->sched_rsp);
         ui_uring_drain(v);
     }
 

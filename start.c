@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <unistd.h>
+#include <sys/mman.h>
 
 /* vCPU startup is compiled at -O0 (separate TU) to prevent LLVM's
  * Attributor pass from applying !callback metadata propagation to
@@ -15,6 +16,24 @@ ui_vcpu_main(void *arg)
 {
     int idx = (int)(intptr_t)arg;
     ui_vCPU *v = &g_ui_sched.vcpus[idx];
+    stack_t ss;
+    void *altstack = NULL;
+
+    if (idx != 0)
+    {
+        altstack = mmap(NULL, SIGSTKSZ, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANON | MAP_STACK, -1, 0);
+        if (altstack != MAP_FAILED)
+        {
+            ss.ss_sp = altstack;
+            ss.ss_size = SIGSTKSZ;
+            ss.ss_flags = 0;
+            sigaltstack(&ss, NULL);
+        }
+        else
+            altstack = NULL;
+    }
+
     v->thread = pthread_self();
     ui_this_vcpu = v;
     while (atomic_load(&v->running))
@@ -27,6 +46,12 @@ ui_vcpu_main(void *arg)
             { atomic_store(&v->running, 0); break; }
             ui_vcpu_idle(v);
         }
+    }
+    if (altstack)
+    {
+        ss.ss_flags = SS_DISABLE;
+        sigaltstack(&ss, NULL);
+        munmap(altstack, SIGSTKSZ);
     }
     return NULL;
 }
