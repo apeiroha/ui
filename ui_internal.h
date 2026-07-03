@@ -91,6 +91,7 @@ typedef struct
     /* Per-vCPU goro pool (only accessed by this vCPU = no lock) */
     ui_Goro         *goro_pool[16];
     int              goro_pool_count;
+    atomic_int       idle;
     int              event_fd;
     int              ring_fd;
     unsigned        *sq_head, *sq_tail, *sq_ring_mask, *sq_ring_entries;

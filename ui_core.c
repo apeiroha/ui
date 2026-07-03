@@ -77,6 +77,20 @@ ui_runq_empty(ui_vCPU *v)
     return atomic_load(&v->runq_count) == 0;
 }
 
+static void
+ui_wake_vcpu(ui_vCPU *v)
+{
+    if (!v || v->event_fd < 0)
+        return;
+
+    int expected = 1;
+    if (atomic_compare_exchange_strong(&v->idle, &expected, 0))
+    {
+        uint64_t val = 1;
+        write(v->event_fd, &val, sizeof(val));
+    }
+}
+
 /* ── Standbyq (cross-vCPU migration queue) ── */
 
 void
@@ -584,6 +598,7 @@ ui_Init(void)
         pthread_spin_init(&v->runq_lock, PTHREAD_PROCESS_PRIVATE);
         ui_runq_init(v);
         ui_standbyq_init(v);
+        atomic_store(&v->idle, 0);
         atomic_store(&v->running, 1);
         v->rng_state = (uint32_t)(i * 0x9E3779B9 + 1);
     }
@@ -745,14 +760,14 @@ ui_spawn_enqueue(ui_Goro *g)
     g->home_vcpu = target;
     atomic_fetch_add(&g_ui_sched.active_count, 1);
     ui_runq_insert(&g_ui_sched.vcpus[target], g);
-    uint64_t val = 1;
-    write(g_ui_sched.vcpus[target].event_fd, &val, sizeof(val));
     if (cur && cur->current && g_ui_sched.nvcpus > 1)
     {
         int peer = (target + 1) % g_ui_sched.nvcpus;
         if (peer != target)
-            write(g_ui_sched.vcpus[peer].event_fd, &val, sizeof(val));
+            ui_wake_vcpu(&g_ui_sched.vcpus[peer]);
     }
+    else
+        ui_wake_vcpu(&g_ui_sched.vcpus[target]);
 }
 
 uint64_t ui_Go(ui_Func0 f) { return ui_GoSized(f, 0); }
@@ -853,8 +868,7 @@ ui_wakeup(ui_Goro *g)
     else
     {
         ui_standbyq_push(v_target, g);
-        uint64_t val = 1;
-        write(v_target->event_fd, &val, sizeof(val));
+        ui_wake_vcpu(v_target);
     }
 }
 
@@ -862,6 +876,7 @@ void
 ui_vcpu_idle(ui_vCPU *v)
 {
     uint64_t now = ui_now_us();
+    atomic_store(&v->idle, 0);
     ui_sleepq_expire(v, now);
     if (!ui_runq_empty(v)) return;
     if (ui_steal_work(v)) return;
@@ -884,8 +899,27 @@ ui_vcpu_idle(ui_vCPU *v)
             wait_us = delta;
     }
 
+    atomic_store(&v->idle, 1);
+    ui_drain_standbyq(v);
+    ui_sleepq_expire(v, ui_now_us());
+    if (!ui_runq_empty(v) || ui_steal_work(v))
+    {
+        atomic_store(&v->idle, 0);
+        return;
+    }
+    if (v->uring_pending > 0) {
+        ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
+        ui_uring_drain(v);
+        if (!ui_runq_empty(v))
+        {
+            atomic_store(&v->idle, 0);
+            return;
+        }
+    }
+
     /* Use io_uring-based idle wait (POLL_ADD on eventfd + TIMEOUT).
      * Replaces the earlier ppoll(eventfd + ring_fd) with a single
      * syscall that handles I/O completions and wakeup events. */
     ui_uring_idle_wait(v, wait_us);
+    atomic_store(&v->idle, 0);
 }
