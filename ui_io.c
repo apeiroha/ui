@@ -157,6 +157,47 @@ ui_uring_submit(ui_vCPU *v)
     ui_uring_enter(v->ring_fd, 1, 0, IORING_ENTER_GETEVENTS);
 }
 
+/* ── Idle wait: drain io_uring completions then block on eventfd ── */
+
+/* Drain pending io_uring completions, then block via ppoll(eventfd)
+ * until timeout or cross-vCPU wakeup.  The ppoll approach avoids
+ * the complexity of POLL_ADD + TIMEOUT SQEs and is simpler while
+ * still improving over the original dual-fd ppoll(ring_fd+eventfd). */
+void
+ui_uring_idle_wait(ui_vCPU *v, uint64_t wait_us)
+{
+    /* Flush deferred completions via GETEVENTS (required by DEFER_TASKRUN).
+     * This must happen BEFORE blocking on eventfd so that I/O completions
+     * that arrived during ui_schedule() are reaped. */
+    if (v->ring_fd >= 0)
+    {
+        ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
+        ui_uring_drain(v);
+    }
+
+    struct timespec ts = {
+        .tv_sec = (time_t)(wait_us / 1000000),
+        .tv_nsec = (long)(wait_us % 1000000) * 1000,
+    };
+    struct pollfd pfd = { .fd = v->event_fd, .events = POLLIN };
+
+    int ret = ppoll(&pfd, 1, &ts, NULL);
+    if (ret > 0)
+    {
+        uint64_t val;
+        while (read(v->event_fd, &val, sizeof(val)) == sizeof(val))
+            ;
+    }
+
+    /* On wakeup, re-flush completions (I/O may have completed while
+     * we were blocked; ppoll didn't check ring_fd). */
+    if (v->ring_fd >= 0)
+    {
+        ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
+        ui_uring_drain(v);
+    }
+}
+
 /* Drain all available CQEs, waking goroutines */
 void
 ui_uring_drain(ui_vCPU *v)

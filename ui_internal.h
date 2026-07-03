@@ -173,9 +173,10 @@ uint64_t      ui_now_ms(void);
 uint64_t      ui_now_us(void);
 
 int           ui_vcpu_ensure_ring(ui_vCPU *v);
+void          ui_uring_drain(ui_vCPU *v);
+void          ui_uring_idle_wait(ui_vCPU *v, uint64_t wait_us);
 int           ui_uring_enter(int ring_fd, unsigned to_submit,
                              unsigned min_complete, unsigned flags);
-void          ui_uring_drain(ui_vCPU *v);
 
 /* ── Wait queue abstraction ── */
 

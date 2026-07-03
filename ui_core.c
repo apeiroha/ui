@@ -869,32 +869,20 @@ ui_vcpu_idle(ui_vCPU *v)
         if (!ui_runq_empty(v)) return;
     }
 
-    /* Block on eventfd until timeout or wakeup */
+    /* Compute max block time */
     uint64_t wait_us = 100000; /* 100ms default */
     if (atomic_load(&g_ui_sched.active_count) > 0)
         wait_us = 1000; /* active runtime: poll for steal every 1ms */
     if (v->sleepq_size > 0 && v->sleepq[0]->wakeup_time > now)
     {
-        uint64_t delta = v->sleepq[0]->wakeup_time - now; /* microseconds */
-        if (delta > 10000000) delta = 10000000; /* cap at 10s */
+        uint64_t delta = v->sleepq[0]->wakeup_time - now;
+        if (delta > 10000000) delta = 10000000;
         if (delta < wait_us)
             wait_us = delta;
     }
-    struct timespec ts = {
-        .tv_sec = (time_t)(wait_us / 1000000),
-        .tv_nsec = (long)(wait_us % 1000000) * 1000,
-    };
-    struct pollfd pfds[2];
-    nfds_t nfds = 1;
-    pfds[0] = (struct pollfd){ .fd = v->event_fd, .events = POLLIN };
-    if (v->ring_fd >= 0 && v->uring_pending > 0)
-        pfds[nfds++] = (struct pollfd){ .fd = v->ring_fd, .events = POLLIN };
 
-    int ret = ppoll(pfds, nfds, &ts, NULL);
-    if (ret > 0) {
-        if (pfds[0].revents & POLLIN)
-        { uint64_t val; read(v->event_fd, &val, sizeof(val)); }
-        if (nfds > 1 && (pfds[1].revents & POLLIN))
-            ui_uring_drain(v);
-    }
+    /* Use io_uring-based idle wait (POLL_ADD on eventfd + TIMEOUT).
+     * Replaces the earlier ppoll(eventfd + ring_fd) with a single
+     * syscall that handles I/O completions and wakeup events. */
+    ui_uring_idle_wait(v, wait_us);
 }
