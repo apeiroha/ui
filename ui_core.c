@@ -333,6 +333,40 @@ ui_get_vcpu_id(void)
     return ui_this_vcpu ? ui_this_vcpu->id : 0;
 }
 
+/* Return a dead goro to the global lock-free pool.
+ * The stack is preserved; physical pages are released via MADV_DONTNEED.
+ * Must be called outside runq_lock. */
+static void
+ui_goro_recycle(ui_Goro *cg)
+{
+    if (cg->joiner)
+    {
+        cg->joiner->state = UI_READY;
+        ui_runq_insert(&g_ui_sched.vcpus[cg->joiner->home_vcpu], cg->joiner);
+        cg->joiner = NULL;
+    }
+    ui_stack_madvise_dontneed(cg);
+    /* Preserve stack info across memset */
+    void *sb = cg->stack_base;
+    size_t sr = cg->stack_reserve;
+    size_t sc = cg->stack_committed;
+    int    ps = cg->page_size;
+    memset(cg, 0, sizeof(ui_Goro));
+    cg->stack_base = sb;
+    cg->stack_reserve = sr;
+    cg->stack_committed = sc;
+    cg->page_size = ps;
+    cg->sleepq_idx = -1;
+    /* Push into Treiber stack */
+    ui_Goro *old;
+    do {
+        old = (ui_Goro *)atomic_load(&g_ui_sched.goro_pool);
+        cg->free_next = old;
+    } while (!atomic_compare_exchange_weak(&g_ui_sched.goro_pool,
+                (uintptr_t *)&old, (uintptr_t)cg));
+    atomic_fetch_sub(&g_ui_sched.active_count, 1);
+}
+
 void
 ui_schedule(void)
 {
@@ -391,35 +425,7 @@ ui_schedule(void)
         {
             if (cg->state == UI_DEAD)
             {
-                if (cg->joiner)
-                {
-                    cg->joiner->state = UI_READY;
-                    ui_runq_insert(&g_ui_sched.vcpus[cg->joiner->home_vcpu], cg->joiner);
-                    cg->joiner = NULL;
-                }
-                ui_vCPU *cv = v;
-                if (cv->goro_pool_count < 16)
-                {
-                    void *sb = cg->stack_base;
-                    size_t sr = cg->stack_reserve;
-                    size_t sc = cg->stack_committed;
-                    int    ps = cg->page_size;
-                    memset(cg, 0, sizeof(ui_Goro));
-                    cg->stack_base = sb; cg->stack_reserve = sr;
-                    cg->stack_committed = sc; cg->page_size = ps;
-                    cg->sleepq_idx = -1;
-                    cv->goro_pool[cv->goro_pool_count] = cg;
-                    cv->goro_pool_count++;
-                }
-                else
-                {
-                    ui_stack_destroy(cg);
-                    pthread_mutex_lock(&g_ui_sched.free_lock);
-                    cg->free_next = g_ui_sched.free_list;
-                    g_ui_sched.free_list = cg;
-                    pthread_mutex_unlock(&g_ui_sched.free_lock);
-                }
-                atomic_fetch_sub(&g_ui_sched.active_count, 1);
+                ui_goro_recycle(cg);
             }
             /* WAITING: already removed from runq by blocking path */
         }
@@ -441,35 +447,7 @@ ui_schedule(void)
         {
             if (cg->state == UI_DEAD)
             {
-                if (cg->joiner)
-                {
-                    cg->joiner->state = UI_READY;
-                    ui_runq_insert(&g_ui_sched.vcpus[cg->joiner->home_vcpu], cg->joiner);
-                    cg->joiner = NULL;
-                }
-                ui_vCPU *cv = v;
-                if (cv->goro_pool_count < 16)
-                {
-                    void *sb = cg->stack_base;
-                    size_t sr = cg->stack_reserve;
-                    size_t sc = cg->stack_committed;
-                    int    ps = cg->page_size;
-                    memset(cg, 0, sizeof(ui_Goro));
-                    cg->stack_base = sb; cg->stack_reserve = sr;
-                    cg->stack_committed = sc; cg->page_size = ps;
-                    cg->sleepq_idx = -1;
-                    cv->goro_pool[cv->goro_pool_count] = cg;
-                    cv->goro_pool_count++;
-                }
-                else
-                {
-                    ui_stack_destroy(cg);
-                    pthread_mutex_lock(&g_ui_sched.free_lock);
-                    cg->free_next = g_ui_sched.free_list;
-                    g_ui_sched.free_list = cg;
-                    pthread_mutex_unlock(&g_ui_sched.free_lock);
-                }
-                atomic_fetch_sub(&g_ui_sched.active_count, 1);
+                ui_goro_recycle(cg);
             }
         }
     }
@@ -550,7 +528,6 @@ ui_Init(void)
     if (g_ui_sched.initialized) return 0;
     memset(&g_ui_sched, 0, sizeof(g_ui_sched));
     pthread_mutex_init(&g_ui_sched.global_lock, NULL);
-    pthread_mutex_init(&g_ui_sched.free_lock, NULL);
     if (ui_setup_signal_handler() < 0) return -1;
     int ncpus = (int)sysconf(_SC_NPROCESSORS_ONLN);
     if (ncpus < 1) ncpus = 1;
@@ -574,6 +551,21 @@ ui_Init(void)
         atomic_store(&v->running, 1);
         v->rng_state = (uint32_t)(i * 0x9E3779B9 + 1);
     }
+    /* Pre-allocate goros+stacks into the global lock-free pool */
+    for (int i = 0; i < UI_GORO_POOL_SIZE; i++)
+    {
+        ui_Goro *g = calloc(1, sizeof(ui_Goro));
+        if (!g) break;
+        g->sleepq_idx = -1;
+        if (ui_stack_init(g, UI_STACK_INIT) < 0) { free(g); break; }
+        /* Push into Treiber stack */
+        ui_Goro *old;
+        do {
+            old = (ui_Goro *)atomic_load(&g_ui_sched.goro_pool);
+            g->free_next = old;
+        } while (!atomic_compare_exchange_weak(&g_ui_sched.goro_pool,
+                    (uintptr_t *)&old, (uintptr_t)g));
+    }
     g_ui_sched.initialized = 1;
     return 0;
 }
@@ -595,6 +587,18 @@ ui_Fini(void)
             munmap(g_ui_sched.vcpus[i].sq_sqes, g_ui_sched.vcpus[i].sqes_size);
         if (g_ui_sched.vcpus[i].ring_fd >= 0)
             close(g_ui_sched.vcpus[i].ring_fd);
+    }
+    /* Drain and destroy all goros in the pool */
+    for (;;)
+    {
+        ui_Goro *g = (ui_Goro *)atomic_load(&g_ui_sched.goro_pool);
+        if (!g) break;
+        ui_Goro *next = g->free_next;
+        if (!atomic_compare_exchange_weak(&g_ui_sched.goro_pool,
+                    (uintptr_t *)&g, (uintptr_t)next))
+            continue;
+        ui_stack_destroy(g);
+        free(g);
     }
     ui_teardown_signal_handler();
     free(g_ui_sched.vcpus);
@@ -621,50 +625,39 @@ ui_goro_init(ui_Goro *g)
 static ui_Goro *
 ui_goro_alloc(ui_Func0 entry, void *arg, int stack_size)
 {
-    ui_vCPU *v = ui_get_vcpu();
     ui_Goro *g = NULL;
 
-    /* Try per-vCPU pool first */
-    if (v && v->goro_pool_count > 0)
-    {
-        v->goro_pool_count--;
-        g = v->goro_pool[v->goro_pool_count];
-        v->goro_pool[v->goro_pool_count] = NULL;
-    }
-
-    /* Fall back to global free list */
-    if (!g)
-    {
-        pthread_mutex_lock(&g_ui_sched.free_lock);
-        g = g_ui_sched.free_list;
-        if (g) g_ui_sched.free_list = g->free_next;
-        pthread_mutex_unlock(&g_ui_sched.free_lock);
-    }
+    /* Try global lock-free pool first (goro + stack preserved) */
+    do {
+        g = (ui_Goro *)atomic_load(&g_ui_sched.goro_pool);
+        if (!g) break;
+    } while (!atomic_compare_exchange_weak(&g_ui_sched.goro_pool,
+                (uintptr_t *)&g, (uintptr_t)g->free_next));
 
     /* Allocate new if nothing available */
     if (!g)
     {
         g = calloc(1, sizeof(ui_Goro));
         if (!g) return NULL;
+        g->sleepq_idx = -1;
+        if (ui_stack_init(g, stack_size) < 0) { free(g); return NULL; }
     }
 
     g->entry = entry;
     g->arg = arg;
-
-    /* Only initialize stack if not pooled (pooled goros keep their stack) */
-    if (!g->stack_base)
-    {
-        if (ui_stack_init(g, stack_size) < 0) { free(g); return NULL; }
-    }
+    g->state = UI_READY;
+    g->prev = NULL;
+    g->next = NULL;
+    g->free_next = NULL;
+    g->standby_next = NULL;
+    g->joiner = NULL;
+    g->wait_node.active = 0;
+    g->wait_node.g = NULL;
+    g->io_pending = 0;
+    g->chan_ptr = NULL;
 
     ui_goro_init(g);
     g->first_run = 1;
-    g->sleepq_idx = -1;
-    g->io_pending = 0;
-    g->wait_node.active = 0;
-    g->wait_node.g = NULL;
-    g->free_next = NULL;
-    g->standby_next = NULL;
     return g;
 }
 

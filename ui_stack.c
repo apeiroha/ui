@@ -55,6 +55,17 @@ ui_stack_destroy(ui_Goro *g)
     g->stack_committed = 0;
 }
 
+/* Release physical pages of the committed region; keep virtual address range.
+ * Call when returning a stack to the pool. */
+void
+ui_stack_madvise_dontneed(ui_Goro *g)
+{
+    if (!g->stack_base || g->stack_committed == 0)
+        return;
+    void *commit_start = g->stack_base + g->stack_reserve - g->stack_committed;
+    madvise(commit_start, g->stack_committed, MADV_DONTNEED);
+}
+
 int
 ui_stack_grow(ui_Goro *g, void *fault_addr)
 {

@@ -22,6 +22,7 @@
 #define UI_STACK_INIT       (128 * 1024)
 #define UI_RUNQ_CAP         256
 #define UI_MAX_VCPUS        64
+#define UI_GORO_POOL_SIZE   256  /* pre-alloc goros + stacks per process */
 
 enum
 {
@@ -84,9 +85,6 @@ typedef struct
     ui_Goro          runq_sentinel;
     pthread_spinlock_t runq_lock;
     atomic_int       runq_count;
-    /* Goroutine pool (reuse stacks, avoid mmap) */
-    ui_Goro         *goro_pool[16];
-    int              goro_pool_count;
     int              event_fd;
     int              ring_fd;
     unsigned        *sq_head, *sq_tail, *sq_ring_mask, *sq_ring_entries;
@@ -123,8 +121,8 @@ typedef struct
     atomic_int       active_count;
     atomic_int       next_vcpu;
     pthread_mutex_t  global_lock;
-    ui_Goro         *free_list;
-    pthread_mutex_t  free_lock;
+    /* Lock-free stack pool: goros with stacks attached, for reuse */
+    _Atomic(uintptr_t) goro_pool;
 
     struct sigaction old_sigsegv;
     stack_t          old_altstack;
@@ -149,6 +147,7 @@ void          ui_goro_exit(void);
 
 int           ui_stack_init(ui_Goro *g, int stack_size);
 void          ui_stack_destroy(ui_Goro *g);
+void          ui_stack_madvise_dontneed(ui_Goro *g);
 int           ui_stack_grow(ui_Goro *g, void *fault_addr);
 void         *ui_stack_bottom(ui_Goro *g);
 
