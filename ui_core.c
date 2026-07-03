@@ -707,6 +707,9 @@ ui_goro_alloc(ui_Func0 entry, void *arg, int stack_size)
     g->wait_node.g = NULL;
     g->io_pending = 0;
     g->chan_ptr = NULL;
+    g->chan_recv_ptr = NULL;
+    g->chan_send_ptr = NULL;
+    g->chan_handoff = 0;
 
     ui_goro_init(g);
     g->first_run = 1;

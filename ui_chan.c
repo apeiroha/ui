@@ -58,6 +58,22 @@ ui_ChanSend(uint64_t ch, const void *val)
         pthread_spin_lock(&c->lock);
         if (c->closed) { pthread_spin_unlock(&c->lock); return; }
 
+        /* Direct handoff: a recver is already waiting — bypass buffer.
+         * Only safe when the wait node has no custom wake callback
+         * (ChanRecv uses ui_waitq_push which sets wake=NULL;
+         * SelectWait sets wake=ui_select_wake). */
+        if (c->recv_wait.head && !c->recv_wait.head->wake)
+        {
+            ui_WaitNode *n = c->recv_wait.head;
+            ui_waitq_remove_node(&c->recv_wait, n);
+            if (n->g->chan_recv_ptr)
+                memcpy(n->g->chan_recv_ptr, val, c->elem_size);
+            n->g->chan_handoff = 1;
+            ui_wakeup(n->g);
+            pthread_spin_unlock(&c->lock);
+            return;
+        }
+
         if (c->count < c->cap)
         {
             unsigned pos = c->write_idx % c->cap;
@@ -73,10 +89,16 @@ ui_ChanSend(uint64_t ch, const void *val)
             ui_vCPU *v = ui_get_vcpu();
             if (!v || !v->current) { pthread_spin_unlock(&c->lock); return; }
             ui_Goro *g = v->current;
+            g->chan_send_ptr = val;
             g->state = UI_WAITING;
             ui_waitq_push(&c->send_wait, g);
             pthread_spin_unlock(&c->lock);
             ui_switch(&g->rsp, v->sched_rsp);
+            /* Woken: check if handoff already completed */
+            if (g->chan_handoff) {
+                g->chan_handoff = 0;
+                return;
+            }
         }
     }
 }
@@ -90,6 +112,23 @@ ui_ChanRecv(uint64_t ch, void *val)
     for (;;)
     {
         pthread_spin_lock(&c->lock);
+
+        /* Direct handoff: a sender is already waiting — bypass buffer.
+         * Only safe when the wait node has no custom wake callback
+         * (ChanSend uses ui_waitq_push which sets wake=NULL). */
+        if (c->send_wait.head && !c->send_wait.head->wake)
+        {
+            ui_WaitNode *n = c->send_wait.head;
+            ui_waitq_remove_node(&c->send_wait, n);
+            const void *send_data = n->g->chan_send_ptr;
+            if (send_data && val)
+                memcpy(val, send_data, c->elem_size);
+            n->g->chan_handoff = 1;
+            ui_wakeup(n->g);
+            pthread_spin_unlock(&c->lock);
+            return;
+        }
+
         if (c->count > 0)
         {
             unsigned pos = c->read_idx % c->cap;
@@ -113,10 +152,16 @@ ui_ChanRecv(uint64_t ch, void *val)
             ui_vCPU *v = ui_get_vcpu();
             if (!v || !v->current) { pthread_spin_unlock(&c->lock); return; }
             ui_Goro *g = v->current;
+            g->chan_recv_ptr = val;
             g->state = UI_WAITING;
             ui_waitq_push(&c->recv_wait, g);
             pthread_spin_unlock(&c->lock);
             ui_switch(&g->rsp, v->sched_rsp);
+            /* Woken: check if handoff already completed */
+            if (g->chan_handoff) {
+                g->chan_handoff = 0;
+                return;
+            }
         }
     }
 }

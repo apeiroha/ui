@@ -72,6 +72,9 @@ struct ui_Goro
     uint64_t  wakeup_time;  /* absolute us (monotonic), for sleepq */
 
     void     *chan_ptr;
+    void     *chan_recv_ptr;  /* dest buffer for recv handoff */
+    const void *chan_send_ptr;/* src data for send handoff */
+    int       chan_handoff;   /* 1 = direct handoff completed */
     uint64_t  io_token;
     ssize_t   io_result;
     int       io_pending;  /* non-zero while an io_uring op is in flight */
