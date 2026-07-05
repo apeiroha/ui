@@ -434,7 +434,7 @@ ui_schedule(void)
     /* Expire sleepers so they become runnable (needed here, not just in idle
      * loop, to avoid deadlock when sleepq is full and no goroutine goes idle). */
     ui_sleepq_expire(v, ui_now_us());
-    if (v->uring_pending > 0)
+    if (v->uring_pending > 0 || v->has_multishot)
     {
         /* DEFER_TASKRUN: completions only arrive on explicit GETEVENTS */
         ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
@@ -607,6 +607,7 @@ ui_Init(void)
         ui_vCPU *v = &g_ui_sched.vcpus[i];
         v->id = i;
         v->ring_fd = -1;
+        v->bgid = -1;
         v->event_fd = eventfd(0, EFD_NONBLOCK);
         pthread_spin_init(&v->runq_lock, PTHREAD_PROCESS_PRIVATE);
         ui_runq_init(v);
@@ -639,6 +640,19 @@ ui_Fini(void)
         atomic_store(&g_ui_sched.vcpus[i].running, 0);
         if (g_ui_sched.vcpus[i].event_fd >= 0)
             close(g_ui_sched.vcpus[i].event_fd);
+        /* Free active multishot recvs */
+        {
+            ui_vCPU *v = &g_ui_sched.vcpus[i];
+            struct ui_RecvMulti *rm = v->active_multishot;
+            while (rm)
+            {
+                struct ui_RecvMulti *next = rm->next;
+                free(rm);
+                rm = next;
+            }
+            v->active_multishot = NULL;
+        }
+        ui_vcpu_destroy_buf_ring(&g_ui_sched.vcpus[i]);
         if (g_ui_sched.vcpus[i].sq_ring_ptr)
             munmap(g_ui_sched.vcpus[i].sq_ring_ptr, g_ui_sched.vcpus[i].sq_ring_size);
         if (g_ui_sched.vcpus[i].cq_ring_ptr)
@@ -673,6 +687,7 @@ ui_Fini(void)
     g_ui_sched.vcpus = NULL;
     g_ui_sched.nvcpus = 0;
     g_ui_sched.initialized = 0;
+    g_ui_sched.finalizing = 0;
     ui_this_vcpu = NULL;
 }
 
@@ -899,7 +914,7 @@ ui_vcpu_idle(ui_vCPU *v)
     if (!ui_runq_empty(v)) return;
     if (ui_steal_work(v)) return;
 
-    if (v->uring_pending > 0) {
+    if (v->uring_pending > 0 || v->has_multishot) {
         ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
         ui_uring_drain(v);
         if (!ui_runq_empty(v)) return;
@@ -925,7 +940,7 @@ ui_vcpu_idle(ui_vCPU *v)
         atomic_store(&v->idle, 0);
         return;
     }
-    if (v->uring_pending > 0) {
+    if (v->uring_pending > 0 || v->has_multishot) {
         ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
         ui_uring_drain(v);
         if (!ui_runq_empty(v))

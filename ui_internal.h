@@ -17,6 +17,46 @@
 #include <stdatomic.h>
 #include <linux/io_uring.h>
 
+/* ── io_uring ABI fallbacks for older kernel headers ── */
+
+#ifndef IORING_RECV_MULTISHOT
+#define IORING_RECV_MULTISHOT          (1U << 1)
+#endif
+
+#ifndef IORING_CQE_F_BUFFER
+#define IORING_CQE_F_BUFFER            (1U << 0)
+#define IORING_CQE_BUFFER_SHIFT        16
+#endif
+
+#ifndef IORING_CQE_F_MORE
+#define IORING_CQE_F_MORE              (1U << 1)
+#endif
+
+#ifndef IORING_REGISTER_PBUF_RING
+#define IORING_REGISTER_PBUF_RING      22
+#define IORING_UNREGISTER_PBUF_RING    23
+#endif
+
+#ifndef IOU_PBUF_RING_MMAP
+#define IOU_PBUF_RING_MMAP             1
+#endif
+
+/* ── RecvMulti struct ── */
+
+struct ui_RecvMulti
+{
+    int                     fd;
+    int                     active;
+    ui_RecvMultiCb          cb;
+    void                   *ctx;
+    struct msghdr           msg;
+    struct iovec            iov;
+    struct sockaddr_storage addr;
+    uint32_t                msg_namelen;    /* reserved name buf size */
+    uint32_t                msg_controllen; /* reserved ctrl buf size */
+    struct ui_RecvMulti    *next;
+};
+
 #define UI_PAGE_SIZE        4096
 #define UI_STACK_RESERVE    (8 * 1024 * 1024)
 #define UI_STACK_INIT       (128 * 1024)
@@ -111,6 +151,15 @@ typedef struct
     size_t           sqes_size;
     int              no_sq_array;  /* IORING_SETUP_NO_SQARRAY was enabled */
     int              uring_pending;
+    /* Multishot recvmsg + buffer ring */
+    int              bgid;                 /* buf group id, -1 = unregistered */
+    int              buf_ring_count;
+    int              buf_ring_buf_size;
+    struct io_uring_buf_ring *buf_ring;    /* mmap'd buf ring metadata */
+    void            *buf_ring_bufs;        /* mmap'd buffer data */
+    size_t           buf_ring_mmap_sz;
+    int              has_multishot;
+    struct ui_RecvMulti *active_multishot;
     void            *sched_rsp;
     ui_Goro         *current;
     /* Sleep queue (binary min-heap by wakeup_time) */
@@ -188,6 +237,8 @@ uint64_t      ui_now_ms(void);
 uint64_t      ui_now_us(void);
 
 int           ui_vcpu_ensure_ring(ui_vCPU *v);
+int           ui_vcpu_ensure_buf_ring(ui_vCPU *v);
+void          ui_vcpu_destroy_buf_ring(ui_vCPU *v);
 void          ui_uring_drain(ui_vCPU *v);
 void          ui_uring_idle_wait(ui_vCPU *v, uint64_t wait_us);
 int           ui_uring_enter(int ring_fd, unsigned to_submit,

@@ -66,4 +66,13 @@ int      ui_Accept(int fd, struct sockaddr *addr, socklen_t *addrlen);
 int      ui_Close(int fd);
 int      ui_Shutdown(int fd, int how);
 
+/* ── Multishot recvmsg + buffer ring ── */
+
+typedef void (*ui_RecvMultiCb)(void *ctx, struct sockaddr *from,
+                               socklen_t from_len,
+                               const void *data, size_t len);
+
+struct ui_RecvMulti *ui_RecvMulti(int fd, ui_RecvMultiCb cb, void *ctx);
+void                 ui_RecvMultiClose(struct ui_RecvMulti *rm);
+
 #endif

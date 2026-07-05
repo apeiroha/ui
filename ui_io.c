@@ -15,11 +15,46 @@
 #define IORING_FEAT_NO_SQARRAY (1U << 10)
 #endif
 #ifndef IORING_SETUP_NO_SQARRAY
-#define IORING_SETUP_NO_SQARRAY (1U << 12)
+#define IORING_SETUP_NO_SQARRAY (1U << 16)
 #endif
 
 #define UI_URING_ENTRIES 1024
 #define UI_IO_TIMEOUT_MS 5000
+
+/* Buffer ring defaults */
+#define UI_BUF_RING_COUNT    256
+#define UI_BUF_RING_BUF_SIZE 2048
+
+/* Extract fields from io_uring_recvmsg_out stored in buffer ring.
+ * The kernel reserves msg_namelen bytes for the source address after the
+ * header, regardless of the actual namelen written to recvmsg_out. */
+static inline struct io_uring_recvmsg_out *
+ui_recvmsg_out(void *buf)
+{
+    return (struct io_uring_recvmsg_out *)buf;
+}
+static inline struct sockaddr *
+ui_recvmsg_name(struct io_uring_recvmsg_out *o, uint32_t reserved_namelen)
+{
+    (void)reserved_namelen;
+    return (struct sockaddr *)((unsigned char *)o + sizeof(*o));
+}
+static inline void *
+ui_recvmsg_payload(struct io_uring_recvmsg_out *o, uint32_t reserved_namelen,
+                   uint32_t reserved_controllen)
+{
+    return (unsigned char *)o + sizeof(*o) + reserved_namelen + reserved_controllen;
+}
+static inline socklen_t
+ui_recvmsg_namelen(struct io_uring_recvmsg_out *o)
+{
+    return o->namelen;
+}
+static inline size_t
+ui_recvmsg_payloadlen(struct io_uring_recvmsg_out *o)
+{
+    return o->payloadlen;
+}
 
 static int
 ui_uring_setup(unsigned entries, struct io_uring_params *p)
@@ -48,7 +83,8 @@ ui_vcpu_ensure_ring(ui_vCPU *v)
      * eliminating kernel IPIs and improving cache locality. */
     p.flags = IORING_SETUP_SINGLE_ISSUER |
               IORING_SETUP_DEFER_TASKRUN |
-              IORING_SETUP_COOP_TASKRUN;
+              IORING_SETUP_COOP_TASKRUN |
+              IORING_SETUP_NO_SQARRAY;
 
     v->ring_fd = ui_uring_setup(UI_URING_ENTRIES, &p);
     if (v->ring_fd < 0)
@@ -61,9 +97,7 @@ ui_vcpu_ensure_ring(ui_vCPU *v)
     if (v->ring_fd < 0)
         return -1;
 
-    v->no_sq_array = 0;
-
-    v->no_sq_array = (p.features & IORING_FEAT_NO_SQARRAY) != 0;
+    v->no_sq_array = (p.flags & IORING_SETUP_NO_SQARRAY) != 0;
 
     size_t sq_size = p.sq_off.array + p.sq_entries * sizeof(unsigned);
     size_t cq_size = p.cq_off.cqes + p.cq_entries * sizeof(struct io_uring_cqe);
@@ -119,6 +153,100 @@ err:
     if (v->ring_fd >= 0) close(v->ring_fd);
     v->ring_fd = -1;
     return -1;
+}
+
+/* ── Provided buffer ring for multishot recvmsg ── */
+
+int
+ui_vcpu_ensure_buf_ring(ui_vCPU *v)
+{
+    if (v->bgid >= 0)
+        return 0;
+    if (v->ring_fd < 0)
+        return -1;
+
+    v->bgid = v->id;
+    v->buf_ring_count = UI_BUF_RING_COUNT;
+    v->buf_ring_buf_size = UI_BUF_RING_BUF_SIZE;
+
+    struct io_uring_buf_reg reg;
+    memset(&reg, 0, sizeof(reg));
+    reg.ring_addr    = 0;
+    reg.ring_entries = (uint32_t)v->buf_ring_count;
+    reg.bgid         = (uint16_t)v->bgid;
+    reg.flags        = IOU_PBUF_RING_MMAP;
+
+    int ret = (int)syscall(__NR_io_uring_register, v->ring_fd,
+                           IORING_REGISTER_PBUF_RING, &reg, 1);
+    if (ret < 0)
+    {
+        v->bgid = -1;
+        return -1;
+    }
+
+    off_t mmap_offset = IORING_OFF_PBUF_RING |
+                        ((uint64_t)(uint32_t)v->bgid << IORING_OFF_PBUF_SHIFT);
+    v->buf_ring_mmap_sz = sizeof(struct io_uring_buf_ring) +
+                          (size_t)v->buf_ring_count * sizeof(struct io_uring_buf);
+    v->buf_ring = mmap(0, v->buf_ring_mmap_sz,
+                       PROT_READ | PROT_WRITE, MAP_SHARED,
+                       v->ring_fd, mmap_offset);
+    if (v->buf_ring == MAP_FAILED)
+        goto err_unreg;
+
+    size_t data_size = (size_t)v->buf_ring_count * (size_t)v->buf_ring_buf_size;
+    v->buf_ring_bufs = mmap(0, data_size,
+                            PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (v->buf_ring_bufs == MAP_FAILED)
+        goto err_munmap;
+
+    for (int i = 0; i < v->buf_ring_count; i++)
+    {
+        v->buf_ring->bufs[i].addr =
+            (uint64_t)(uintptr_t)((unsigned char *)v->buf_ring_bufs +
+                                  (size_t)i * (size_t)v->buf_ring_buf_size);
+        v->buf_ring->bufs[i].len = (uint32_t)v->buf_ring_buf_size;
+        v->buf_ring->bufs[i].bid = (uint16_t)i;
+        v->buf_ring->bufs[i].resv = 0;
+    }
+    __sync_synchronize();
+    v->buf_ring->tail = (uint16_t)v->buf_ring_count;
+    return 0;
+
+err_munmap:
+    munmap(v->buf_ring, v->buf_ring_mmap_sz);
+    v->buf_ring = NULL;
+err_unreg:
+    syscall(__NR_io_uring_register, v->ring_fd,
+            IORING_UNREGISTER_PBUF_RING, &reg, 1);
+    v->bgid = -1;
+    return -1;
+}
+
+void
+ui_vcpu_destroy_buf_ring(ui_vCPU *v)
+{
+    if (v->bgid < 0)
+        return;
+
+    struct io_uring_buf_reg reg;
+    memset(&reg, 0, sizeof(reg));
+    reg.ring_entries = (uint32_t)v->buf_ring_count;
+    reg.bgid         = (uint16_t)v->bgid;
+    syscall(__NR_io_uring_register, v->ring_fd,
+            IORING_UNREGISTER_PBUF_RING, &reg, 1);
+
+    if (v->buf_ring && v->buf_ring != MAP_FAILED)
+        munmap(v->buf_ring, v->buf_ring_mmap_sz);
+    if (v->buf_ring_bufs && v->buf_ring_bufs != MAP_FAILED)
+        munmap(v->buf_ring_bufs,
+               (size_t)v->buf_ring_count * (size_t)v->buf_ring_buf_size);
+    v->buf_ring = NULL;
+    v->buf_ring_bufs = NULL;
+    v->bgid = -1;
+    v->buf_ring_count = 0;
+    v->buf_ring_buf_size = 0;
 }
 
 static struct io_uring_sqe *
@@ -212,8 +340,37 @@ ui_uring_drain(ui_vCPU *v)
     while (head != tail)
     {
         struct io_uring_cqe *cqe = &v->cq_cqes[head & mask];
-        if (cqe->user_data != 0)
+
+        if (cqe->user_data & 1)
         {
+            /* ── Multishot recvmsg completion ── */
+            struct ui_RecvMulti *rm = (struct ui_RecvMulti *)(uintptr_t)(cqe->user_data & ~1ULL);
+            if (!rm->active)
+                goto skip;
+
+            if (cqe->flags & IORING_CQE_F_BUFFER && cqe->res > 0)
+            {
+                int bid = (int)(cqe->flags >> IORING_CQE_BUFFER_SHIFT);
+                void *buf = (unsigned char *)v->buf_ring_bufs +
+                            (size_t)bid * (size_t)v->buf_ring_buf_size;
+                struct io_uring_recvmsg_out *o = ui_recvmsg_out(buf);
+
+                rm->cb(rm->ctx,
+                       ui_recvmsg_name(o, rm->msg_namelen),
+                       ui_recvmsg_namelen(o),
+                       ui_recvmsg_payload(o, rm->msg_namelen,
+                                           rm->msg_controllen),
+                       ui_recvmsg_payloadlen(o));
+            }
+            else if (cqe->res < 0)
+            {
+                /* Error or cancellation */
+                rm->active = 0;
+            }
+        }
+        else if (cqe->user_data != 0)
+        {
+            /* ── Regular goro I/O completion ── */
             ui_Goro *g = (ui_Goro *)(uintptr_t)cqe->user_data;
             g->io_result = cqe->res;
             g->io_pending = 0;
@@ -222,6 +379,7 @@ ui_uring_drain(ui_vCPU *v)
             if (v->uring_pending > 0)
                 v->uring_pending--;
         }
+skip:
         head++;
     }
     *v->cq_head = head;
@@ -452,4 +610,96 @@ ui_PollAdd(int fd, unsigned events)
     sqe->fd = fd;
     sqe->poll_events = events;
     return (int)ui_io_submit_and_wait(v, sqe);
+}
+
+/* ── Multishot recvmsg + provided buffer ring ── */
+
+struct ui_RecvMulti *
+ui_RecvMulti(int fd, ui_RecvMultiCb cb, void *ctx)
+{
+    ui_vCPU *v = ui_this_vcpu;
+    if (!v || !v->current) return NULL;
+    if (ui_vcpu_ensure_ring(v) < 0) return NULL;
+    if (ui_vcpu_ensure_buf_ring(v) < 0) return NULL;
+
+    struct ui_RecvMulti *rm = (struct ui_RecvMulti *)calloc(1, sizeof(*rm));
+    if (!rm) return NULL;
+
+    rm->fd = fd;
+    rm->active = 1;
+    rm->cb = cb;
+    rm->ctx = ctx;
+
+    /* msghdr: kernel reads it during io_uring_enter, copies internally,
+     * and never touches the original again for this multishot recv.
+     * Source address is stored in the buffer ring via io_uring_recvmsg_out. */
+    rm->msg.msg_name    = &rm->addr;
+    rm->msg.msg_namelen = sizeof(rm->addr);
+    rm->msg.msg_iov     = &rm->iov;
+    rm->msg.msg_iovlen  = 1;
+    rm->msg.msg_control = NULL;
+    rm->msg.msg_controllen = 0;
+    rm->msg_namelen    = sizeof(rm->addr);
+    rm->msg_controllen = 0;
+
+    struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
+    if (!sqe)
+    {
+        free(rm);
+        return NULL;
+    }
+
+    sqe->opcode    = IORING_OP_RECVMSG;
+    sqe->fd        = fd;
+    sqe->addr      = (uint64_t)(uintptr_t)&rm->msg;
+    sqe->len       = 1;
+    sqe->msg_flags = 0;
+    sqe->flags    |= IOSQE_BUFFER_SELECT;
+    sqe->buf_index = (uint16_t)v->bgid;
+    sqe->ioprio   |= IORING_RECV_MULTISHOT;
+    sqe->user_data = (uint64_t)(uintptr_t)rm | 1;
+
+    rm->next = v->active_multishot;
+    v->active_multishot = rm;
+    v->has_multishot = 1;
+
+    ui_uring_submit(v);
+    return rm;
+}
+
+void
+ui_RecvMultiClose(struct ui_RecvMulti *rm)
+{
+    if (!rm || !rm->active) return;
+    rm->active = 0;
+
+    ui_vCPU *v = ui_this_vcpu;
+    if (v)
+    {
+        for (struct ui_RecvMulti **p = &v->active_multishot; *p; p = &(*p)->next)
+        {
+            if (*p == rm)
+            {
+                *p = rm->next;
+                break;
+            }
+        }
+        if (!v->active_multishot)
+            v->has_multishot = 0;
+
+        /* Submit async cancel to stop the kernel side, then drain
+         * so any residual CQEs are consumed before we free rm. */
+        struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
+        if (sqe)
+        {
+            sqe->opcode = IORING_OP_ASYNC_CANCEL;
+            sqe->addr = (uint64_t)(uintptr_t)rm | 1;
+            sqe->off = IORING_ASYNC_CANCEL_USERDATA;
+            sqe->fd = -1;
+            ui_uring_submit(v);
+        }
+        /* Drain any remaining CQEs referencing rm */
+        ui_uring_drain(v);
+    }
+    free(rm);
 }
