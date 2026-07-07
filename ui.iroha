@@ -1,7 +1,67 @@
 package ui
 
+// ── Lifecycle ──
+extern func Init() int
+extern func Run()
+extern func Fini()
+
+// ── Goroutine spawn (used internally by compiler's go codegen) ──
+extern func Go(f uintptr) uint64
+extern func GoSized(f uintptr, stack_size int) uint64
+extern func Go1(fn uintptr, arg uintptr) uint64
+extern func Go1Sized(fn uintptr, arg uintptr, stack_size int) uint64
+
+// ── Yield / Sleep ──
+extern func Yield()
+extern func Sleep(ms uint32)
+extern func SleepUs(us uint32)
+
+// ── Channel ops (used internally by compiler's chan codegen) ──
+extern func NewChan(elem_size uint, buf_cap uint32) uint64
+extern func ChanSend(c uint64, val *uint8)
+extern func ChanRecv(c uint64, val *uint8)
+extern func ChanTrySend(c uint64, val *uint8) bool
+extern func ChanTryRecv(c uint64, val *uint8) bool
+extern func ChanClose(c uint64)
+extern func ChanFree(c uint64)
+
+// ── Timer ──
+extern func NewTimer(ms uint32) uint64
+extern func NewTimerUs(us uint32) uint64
+extern func TimerStop(ch uint64)
+extern func TimerReset(old_ch uint64, new_us uint32) uint64
+
+// ── Select (used internally by compiler's select codegen) ──
+extern func SelectWait(recv_chs *uint64, recv_bufs **uint8, send_chs *uint64, send_vals **uint8, nrecv int, nsend int, timeout_ms int) int
+
+// ── Mutex ──
 extern func MutexNew() uint64
 extern func MutexLock(mu uint64)
+extern func MutexTryLock(mu uint64) bool
 extern func MutexUnlock(mu uint64)
 extern func MutexFree(mu uint64)
-extern func Yield()
+
+// ── Cond ──
+extern func CondNew() uint64
+extern func CondWait(c uint64, m uint64)
+extern func CondSignal(c uint64)
+extern func CondBroadcast(c uint64)
+extern func CondFree(c uint64)
+
+// ── Async I/O (io_uring) ──
+extern func Read(fd int, buf *uint8, count uint) int
+extern func Write(fd int, buf *uint8, count uint) int
+extern func Open(pathname *uint8, flags int) int
+extern func Recv(fd int, buf *uint8, count uint, flags int) int
+extern func Send(fd int, buf *uint8, count uint, flags int) int
+extern func SendMsg(fd int, msg *uint8, flags int) int
+extern func RecvMsg(fd int, msg *uint8, flags int) int
+extern func PollAdd(fd int, events uint32) int
+extern func Connect(fd int, addr *uint8, addrlen uint32) int
+extern func Accept(fd int, addr *uint8, addrlen *uint32) int
+extern func Close(fd int) int
+extern func Shutdown(fd int, how int) int
+
+// ── Multishot recvmsg + buffer ring ──
+extern func RecvMulti(fd int, cb uintptr, ctx *uint8) *uint8
+extern func RecvMultiClose(rm *uint8)
