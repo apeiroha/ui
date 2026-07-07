@@ -4,3 +4,4 @@ extern func MutexNew() uint64
 extern func MutexLock(mu uint64)
 extern func MutexUnlock(mu uint64)
 extern func MutexFree(mu uint64)
+extern func Yield()
