@@ -374,11 +374,20 @@ ui_uring_drain(ui_vCPU *v)
              * CAS on io_pending (1→0) ensures we only act if the goro is still
              * actually waiting for this I/O.  If the goro was already recycled
              * or reallocated, io_pending will be 0 and the CAS fails,
-             * preventing stale CQEs from corrupting reused goro memory. */
+             * preventing stale CQEs from corrupting reused goro memory.
+             *
+             * If g == v->current, the goro called ui_uring_drain from within
+             * ui_io_submit_and_wait's own completion check loop — it will see
+             * io_pending==0 and return on its own.  Do NOT ui_wakeup the
+             * current goroutine (that would double-schedule it). */
             ui_Goro *g = (ui_Goro *)(uintptr_t)cqe->user_data;
             if (__sync_bool_compare_and_swap(&g->io_pending, 1, 0)) {
                 g->io_result = cqe->res;
-                ui_wakeup(g);
+                if (g != v->current) {
+                    ui_wakeup(g);
+                } else {
+                    g->state = UI_READY;
+                }
             }
             if (v->uring_pending > 0)
                 v->uring_pending--;
