@@ -44,6 +44,13 @@ ui_runq_insert_locked(ui_vCPU *v, ui_Goro *g)
     {
         return;
     }
+    /* Assert: goros must have a valid stack pointer when inserted */
+    if (!g->first_run && g->rsp == 0) {
+        fprintf(stderr, "\nFATAL: runq_insert goro %p rsp=0 v=%d state=%d home=%d "
+                "first=%d io_pend=%d\n",
+                g, v->id, g->state, g->home_vcpu, g->first_run, g->io_pending);
+        _exit(1);
+    }
     ui_Goro *s = &v->runq_sentinel;
     ui_Goro *last = s->prev;
     g->next = s;
@@ -489,6 +496,13 @@ ui_schedule(void)
             /* WAITING: already removed from runq by blocking path */
         }
 
+        /* Defensive: skip goros whose stack pointer was corrupted
+         * (e.g. by stale CQE processing on recycled memory). */
+        if (!g->first_run && !g->rsp) {
+            g = NULL;
+            goto no_goro;
+        }
+
         g->state = UI_RUNNING;
         v->current = g;
         if (g->first_run)
@@ -501,6 +515,7 @@ ui_schedule(void)
     }
     else
     {
+no_goro:
         /* No goroutine to run */
         if (cg)
         {

@@ -370,12 +370,16 @@ ui_uring_drain(ui_vCPU *v)
         }
         else if (cqe->user_data != 0)
         {
-            /* ── Regular goro I/O completion ── */
+            /* ── Regular goro I/O completion ──
+             * CAS on io_pending (1→0) ensures we only act if the goro is still
+             * actually waiting for this I/O.  If the goro was already recycled
+             * or reallocated, io_pending will be 0 and the CAS fails,
+             * preventing stale CQEs from corrupting reused goro memory. */
             ui_Goro *g = (ui_Goro *)(uintptr_t)cqe->user_data;
-            g->io_result = cqe->res;
-            g->io_pending = 0;
-            g->state = UI_READY;
-            ui_runq_insert(v, g);
+            if (__sync_bool_compare_and_swap(&g->io_pending, 1, 0)) {
+                g->io_result = cqe->res;
+                ui_wakeup(g);
+            }
             if (v->uring_pending > 0)
                 v->uring_pending--;
         }
