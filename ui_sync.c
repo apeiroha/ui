@@ -177,3 +177,134 @@ ui_CondFree(uint64_t ch)
 {
     free((void *)(uintptr_t)ch);
 }
+
+/* ── Read-Write Lock ── */
+
+typedef struct
+{
+    atomic_int splock;
+    int         readers;
+    int         writer;
+    int         write_waiters;
+    ui_WaitQ    read_wait;
+    ui_WaitQ    write_wait;
+} ui_rwlock;
+
+uint64_t
+ui_RwLockNew(void)
+{
+    ui_rwlock *rw = calloc(1, sizeof(ui_rwlock));
+    if (rw) {
+        ui_waitq_init(&rw->read_wait);
+        ui_waitq_init(&rw->write_wait);
+    }
+    return (uint64_t)(uintptr_t)rw;
+}
+
+void
+ui_RwLockRLock(uint64_t rwh)
+{
+    ui_rwlock *rw = (ui_rwlock *)(uintptr_t)rwh;
+    if (!rw) return;
+
+    for (;;)
+    {
+        spin_lock(&rw->splock);
+        if (!rw->writer && rw->write_waiters == 0)
+        {
+            rw->readers++;
+            spin_unlock(&rw->splock);
+            return;
+        }
+        {
+            ui_vCPU *v = ui_get_vcpu();
+            ui_Goro *g = v ? v->current : NULL;
+            if (v && g)
+            {
+                g->state = UI_WAITING;
+                ui_waitq_push(&rw->read_wait, g);
+                spin_unlock(&rw->splock);
+                ui_switch(&g->rsp, v->sched_rsp);
+            }
+            else
+            {
+                spin_unlock(&rw->splock);
+                return;
+            }
+        }
+    }
+}
+
+void
+ui_RwLockRUnlock(uint64_t rwh)
+{
+    ui_rwlock *rw = (ui_rwlock *)(uintptr_t)rwh;
+    if (!rw) return;
+
+    spin_lock(&rw->splock);
+    rw->readers--;
+    if (rw->readers == 0 && rw->write_waiters > 0)
+        ui_waitq_wake_one(&rw->write_wait);
+    spin_unlock(&rw->splock);
+}
+
+void
+ui_RwLockWLock(uint64_t rwh)
+{
+    ui_rwlock *rw = (ui_rwlock *)(uintptr_t)rwh;
+    if (!rw) return;
+
+    for (;;)
+    {
+        spin_lock(&rw->splock);
+        if (rw->readers == 0 && !rw->writer)
+        {
+            rw->writer = 1;
+            spin_unlock(&rw->splock);
+            return;
+        }
+        rw->write_waiters++;
+        {
+            ui_vCPU *v = ui_get_vcpu();
+            ui_Goro *g = v ? v->current : NULL;
+            if (v && g)
+            {
+                g->state = UI_WAITING;
+                ui_waitq_push(&rw->write_wait, g);
+                spin_unlock(&rw->splock);
+                ui_switch(&g->rsp, v->sched_rsp);
+            }
+            else
+            {
+                spin_unlock(&rw->splock);
+                return;
+            }
+        }
+    }
+}
+
+void
+ui_RwLockWUnlock(uint64_t rwh)
+{
+    ui_rwlock *rw = (ui_rwlock *)(uintptr_t)rwh;
+    if (!rw) return;
+
+    spin_lock(&rw->splock);
+    rw->writer = 0;
+    if (rw->write_waiters > 0)
+    {
+        rw->write_waiters--;
+        ui_waitq_wake_one(&rw->write_wait);
+    }
+    else
+    {
+        ui_waitq_wake_all(&rw->read_wait);
+    }
+    spin_unlock(&rw->splock);
+}
+
+void
+ui_RwLockFree(uint64_t rwh)
+{
+    free((void *)(uintptr_t)rwh);
+}

@@ -48,6 +48,14 @@ extern func CondSignal(c uint64)
 extern func CondBroadcast(c uint64)
 extern func CondFree(c uint64)
 
+// ── RwLock ──
+extern func RwLockNew() uint64
+extern func RwLockRLock(rw uint64)
+extern func RwLockRUnlock(rw uint64)
+extern func RwLockWLock(rw uint64)
+extern func RwLockWUnlock(rw uint64)
+extern func RwLockFree(rw uint64)
+
 // ── Async I/O (io_uring) ──
 extern func Read(fd int, buf *uint8, count uint) int
 extern func Write(fd int, buf *uint8, count uint) int

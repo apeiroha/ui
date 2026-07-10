@@ -52,6 +52,14 @@ void     ui_CondSignal(uint64_t c);
 void     ui_CondBroadcast(uint64_t c);
 void     ui_CondFree(uint64_t c);
 
+/* ── RwLock ── */
+uint64_t ui_RwLockNew(void);
+void     ui_RwLockRLock(uint64_t rw);
+void     ui_RwLockRUnlock(uint64_t rw);
+void     ui_RwLockWLock(uint64_t rw);
+void     ui_RwLockWUnlock(uint64_t rw);
+void     ui_RwLockFree(uint64_t rw);
+
 ssize_t  ui_Read(int fd, void *buf, size_t count);
 ssize_t  ui_Write(int fd, const void *buf, size_t count);
 int      ui_Open(const char *pathname, int flags, ...);
