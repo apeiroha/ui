@@ -53,7 +53,12 @@ ui_waitq_push_node(ui_WaitQ *q, ui_WaitNode *n)
 void
 ui_waitq_remove_node(ui_WaitQ *q, ui_WaitNode *n)
 {
-    if (!q || !n || !n->active || q->count == 0) return;
+    if (!q || !n || !n->active || q->count == 0 || !q->head)
+        return;
+
+    /* Safety: verify node is actually in this queue */
+    if (n->next == NULL && n->prev == NULL && q->head != n)
+        return;  /* Node not in this queue */
 
     if (n->next == n)
     {
@@ -61,6 +66,9 @@ ui_waitq_remove_node(ui_WaitQ *q, ui_WaitNode *n)
     }
     else
     {
+        if (!n->prev || !n->next)
+            return;  /* Corrupted node */
+        
         n->prev->next = n->next;
         n->next->prev = n->prev;
         if (q->head == n)

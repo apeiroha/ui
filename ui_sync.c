@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ── Ticket spinlock ── */
+/* ── Ticket spinlock (used by Cond and RWLock) ── */
 
 static void
 spin_lock(atomic_int *l)
@@ -18,20 +18,14 @@ spin_unlock(atomic_int *l)
     atomic_store(l, 0);
 }
 
-/* ── Mutex ── */
+/* ── Optimized Mutex using atomic operations ── */
 
 typedef struct
 {
-    atomic_int splock;
-    int         locked;
+    atomic_int locked;
+    atomic_int splock;  /* protects waitq */
     ui_WaitQ    waitq;
 } ui_mutex;
-
-static ui_vCPU *
-ui_get_vcpu(void)
-{
-    return ui_this_vcpu;
-}
 
 uint64_t
 ui_MutexNew(void)
@@ -41,39 +35,38 @@ ui_MutexNew(void)
     return (uint64_t)(uintptr_t)m;
 }
 
+/* Fast lock: try atomic CAS first, only park on contention */
 void
 ui_MutexLock(uint64_t mh)
 {
     ui_mutex *m = (ui_mutex *)(uintptr_t)mh;
     if (!m) return;
 
-    for (;;)
+    /* Fast path: try to acquire without parking */
+    int expected = 0;
+    if (atomic_compare_exchange_strong_explicit(&m->locked, &expected, 1,
+                                                 memory_order_acquire, memory_order_relaxed))
+        return;  /* Got it! */
+
+    /* Contended: park goroutine - protect waitq with spinlock */
+    ui_vCPU *v = ui_this_vcpu;
+    ui_Goro *g = v ? v->current : NULL;
+    if (!v || !g) return;
+
+    g->state = UI_WAITING;
+    spin_lock(&m->splock);
+    if (!m->locked)
     {
-        spin_lock(&m->splock);
-        if (!m->locked)
-        {
-            m->locked = 1;
-            spin_unlock(&m->splock);
-            return;
-        }
-        {
-            ui_vCPU *v = ui_get_vcpu();
-            ui_Goro *g = v ? v->current : NULL;
-            if (v && g)
-            {
-                g->state = UI_WAITING;
-                ui_waitq_push(&m->waitq, g);
-                spin_unlock(&m->splock);
-                ui_switch(&g->rsp, v->sched_rsp);
-                /* Woken up — retry */
-            }
-            else
-            {
-                spin_unlock(&m->splock);
-                return;
-            }
-        }
+        /* Lock became free while we were waiting for spinlock */
+        m->locked = 1;
+        spin_unlock(&m->splock);
+        return;
     }
+    ui_waitq_push(&m->waitq, g);
+    spin_unlock(&m->splock);
+    ui_switch(&g->rsp, v->sched_rsp);
+    /* Woken up — retry */
+    ui_MutexLock(mh);
 }
 
 bool
@@ -81,10 +74,10 @@ ui_MutexTryLock(uint64_t mh)
 {
     ui_mutex *m = (ui_mutex *)(uintptr_t)mh;
     if (!m) return false;
-    spin_lock(&m->splock);
-    if (!m->locked) { m->locked = 1; spin_unlock(&m->splock); return true; }
-    spin_unlock(&m->splock);
-    return false;
+
+    int expected = 0;
+    return atomic_compare_exchange_strong_explicit(&m->locked, &expected, 1,
+                                                    memory_order_acquire, memory_order_relaxed);
 }
 
 void
@@ -93,10 +86,18 @@ ui_MutexUnlock(uint64_t mh)
     ui_mutex *m = (ui_mutex *)(uintptr_t)mh;
     if (!m) return;
 
+    /* Fast path: if no waiters in queue, just release with release semantics */
     spin_lock(&m->splock);
+    if (!m->waitq.head)
+    {
+        m->locked = 0;
+        spin_unlock(&m->splock);
+        return;
+    }
+
+    /* Has waiters: need to wake one */
     m->locked = 0;
-    if (!ui_waitq_empty(&m->waitq))
-        ui_waitq_wake_one(&m->waitq);
+    ui_waitq_wake_one(&m->waitq);
     spin_unlock(&m->splock);
 }
 
@@ -129,17 +130,17 @@ ui_CondWait(uint64_t ch, uint64_t mh)
     ui_mutex *m = (ui_mutex *)(uintptr_t)mh;
     if (!c || !m) return;
 
-    ui_vCPU *v = ui_get_vcpu();
+    ui_vCPU *v = ui_this_vcpu;
     if (!v || !v->current) return;
     ui_Goro *g = v->current;
 
     /* Queue on the cond before releasing the mutex to avoid lost wakeups. */
     spin_lock(&c->splock);
 
-    /* Release mutex (under its spinlock to prevent race) */
+    /* Release mutex - atomic unlock with wakeup if waiters */
     spin_lock(&m->splock);
-    m->locked = 0;
-    if (!ui_waitq_empty(&m->waitq))
+    atomic_store_explicit(&m->locked, 0, memory_order_release);
+    if (m->waitq.head)
         ui_waitq_wake_one(&m->waitq);
     spin_unlock(&m->splock);
 
@@ -217,7 +218,7 @@ ui_RwLockRLock(uint64_t rwh)
             return;
         }
         {
-            ui_vCPU *v = ui_get_vcpu();
+            ui_vCPU *v = ui_this_vcpu;
             ui_Goro *g = v ? v->current : NULL;
             if (v && g)
             {
@@ -265,7 +266,7 @@ ui_RwLockWLock(uint64_t rwh)
         }
         rw->write_waiters++;
         {
-            ui_vCPU *v = ui_get_vcpu();
+            ui_vCPU *v = ui_this_vcpu;
             ui_Goro *g = v ? v->current : NULL;
             if (v && g)
             {
