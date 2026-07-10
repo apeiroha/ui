@@ -408,15 +408,22 @@ ui_io_submit_and_wait(ui_vCPU *v, struct io_uring_sqe *sqe)
     cur->io_pending = 1;
     ui_uring_submit(v);
 
-    cur->state = UI_WAITING;
     cur->io_token = (uint64_t)(uintptr_t)cur;
 
-    /* Check if completion already arrived */
+    /* Drain any immediate completion BEFORE setting state to WAITING.
+     * If the I/O completed instantly (within the io_uring_enter syscall),
+     * ui_uring_drain will CAS io_pending 1→0 and set io_result.
+     * Return immediately — no state change needed, the goro is still running. */
     ui_uring_drain(v);
+    if (!cur->io_pending)
+        return cur->io_result;
+
+    cur->state = UI_WAITING;
 
     while (cur->io_pending)
     {
         cur->state = UI_WAITING;
+        /* Yield and wait for completion */
         ui_switch(&cur->rsp, v->sched_rsp);
         ui_uring_drain(v);
     }
