@@ -439,8 +439,10 @@ ui_schedule(void)
     ui_drain_standbyq(v);
 
     /* Expire sleepers so they become runnable (needed here, not just in idle
-     * loop, to avoid deadlock when sleepq is full and no goroutine goes idle). */
-    ui_sleepq_expire(v, ui_now_us());
+     * loop, to avoid deadlock when sleepq is full and no goroutine goes idle).
+     * Skip clock read if sleepq is empty to avoid vDSO overhead. */
+    if (v->sleepq_size > 0)
+        ui_sleepq_expire(v, ui_now_us());
     if (v->uring_pending > 0 || v->has_multishot)
     {
         /* DEFER_TASKRUN: completions only arrive on explicit GETEVENTS */
