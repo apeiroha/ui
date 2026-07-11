@@ -18,11 +18,28 @@ spin_unlock(atomic_int *l)
     atomic_store(l, 0);
 }
 
-/* ── Optimized Mutex using atomic operations ── */
+/* ── Optimized Mutex using atomic operations ──
+ *
+ * State encoding (single atomic int):
+ *   bit 0 (MUTEX_LOCKED)  — lock is held
+ *   bit 1 (MUTEX_WAITING) — one or more goroutines are waiting on waitq
+ *
+ * Lock fast path: CAS 0 → LOCKED
+ * Unlock fast path: fetch_sub LOCKED → if old == LOCKED, done.
+ *
+ * Lock contention: under splock, set WAITING, re-check LOCKED.
+ *   If LOCKED not set (unlock raced ahead), acquire atomically.
+ *   If LOCKED still set, push to waitq and park.
+ *
+ * Unlock slow path (WAITING was set): under splock, wake one waiter.
+ */
+
+#define MUTEX_LOCKED  1
+#define MUTEX_WAITING 2
 
 typedef struct
 {
-    atomic_int locked;
+    atomic_int state;
     atomic_int splock;  /* protects waitq */
     ui_WaitQ    waitq;
 } ui_mutex;
@@ -43,8 +60,7 @@ ui_MutexLock(uint64_t mh)
     if (!m) return;
 
     /* Fast path: try to acquire without parking */
-    int expected = 0;
-    if (atomic_compare_exchange_strong_explicit(&m->locked, &expected, 1,
+    if (atomic_compare_exchange_strong_explicit(&m->state, &(int){0}, MUTEX_LOCKED,
                                                  memory_order_acquire, memory_order_relaxed))
         return;  /* Got it! */
 
@@ -55,13 +71,39 @@ ui_MutexLock(uint64_t mh)
 
     g->state = UI_WAITING;
     spin_lock(&m->splock);
-    if (!m->locked)
+
+    /* Under splock: set WAITING and re-check LOCKED.
+     * The splock serializes with the unlock slow path; the unlock fast
+     * path (fetch_sub returning MUTEX_LOCKED) means no WAITING existed
+     * when it ran, so no concurrent unlocker is in the slow path. */
+    int old = atomic_fetch_or_explicit(&m->state, MUTEX_WAITING,
+                                        memory_order_relaxed);
+
+    if (!(old & MUTEX_LOCKED))
     {
-        /* Lock became free while we were waiting for spinlock */
-        m->locked = 1;
-        spin_unlock(&m->splock);
-        return;
+        /* Lock was released before we set WAITING. Current state is
+         * old|WAITING = 2 (or 2 if old was 2). Acquire atomically:
+         * CAS from WAITING-only to LOCKED.
+         *
+         * IMPORTANT: preserve WAITING if there are other goroutines
+         * still on the waitq, so the unlock path wakes them. */
+        int has_other_waiters = (m->waitq.head != NULL);
+        int new_state = MUTEX_LOCKED | (has_other_waiters ? MUTEX_WAITING : 0);
+
+        int expected = old | MUTEX_WAITING;  /* always 2 */
+        if (atomic_compare_exchange_strong_explicit(&m->state, &expected,
+                                                     new_state,
+                                                     memory_order_acquire,
+                                                     memory_order_relaxed))
+        {
+            spin_unlock(&m->splock);
+            return;  /* Got the lock without parking */
+        }
+        /* CAS failed — state changed under us (e.g. another waiter
+         * also set WAITING). Fall through to waitq. */
     }
+
+    /* LOCKED is still set (or CAS failed) — actually park */
     ui_waitq_push(&m->waitq, g);
     spin_unlock(&m->splock);
     ui_switch(&g->rsp, v->sched_rsp);
@@ -76,8 +118,8 @@ ui_MutexTryLock(uint64_t mh)
     if (!m) return false;
 
     int expected = 0;
-    return atomic_compare_exchange_strong_explicit(&m->locked, &expected, 1,
-                                                    memory_order_acquire, memory_order_relaxed);
+    return atomic_compare_exchange_strong_explicit(&m->state, &expected, MUTEX_LOCKED,
+                                                     memory_order_acquire, memory_order_relaxed);
 }
 
 void
@@ -86,18 +128,29 @@ ui_MutexUnlock(uint64_t mh)
     ui_mutex *m = (ui_mutex *)(uintptr_t)mh;
     if (!m) return;
 
-    /* Fast path: if no waiters in queue, just release with release semantics */
-    spin_lock(&m->splock);
-    if (!m->waitq.head)
-    {
-        m->locked = 0;
-        spin_unlock(&m->splock);
-        return;
-    }
+    /* Fast path: atomically release lock and check for waiters.
+     * fetch_sub with release returns the state BEFORE the subtraction.
+     * If old == MUTEX_LOCKED (just LOCKED, no WAITING) → done. */
+    int old = atomic_fetch_sub_explicit(&m->state, MUTEX_LOCKED,
+                                         memory_order_release);
+    if (old == MUTEX_LOCKED)
+        return;  /* No waiters, fast path */
 
-    /* Has waiters: need to wake one */
-    m->locked = 0;
-    ui_waitq_wake_one(&m->waitq);
+    /* Has (or might have) waiters: wake one under splock */
+    spin_lock(&m->splock);
+    if (m->waitq.head)
+    {
+        ui_waitq_wake_one(&m->waitq);
+        if (!m->waitq.head)
+            atomic_fetch_and_explicit(&m->state, ~MUTEX_WAITING,
+                                       memory_order_relaxed);
+    }
+    else
+    {
+        /* Stale WAITING flag with no actual waiters — clear it */
+        atomic_fetch_and_explicit(&m->state, ~MUTEX_WAITING,
+                                   memory_order_relaxed);
+    }
     spin_unlock(&m->splock);
 }
 
@@ -139,9 +192,17 @@ ui_CondWait(uint64_t ch, uint64_t mh)
 
     /* Release mutex - atomic unlock with wakeup if waiters */
     spin_lock(&m->splock);
-    atomic_store_explicit(&m->locked, 0, memory_order_release);
+    atomic_fetch_and_explicit(&m->state, ~MUTEX_LOCKED, memory_order_release);
     if (m->waitq.head)
+    {
         ui_waitq_wake_one(&m->waitq);
+        if (!m->waitq.head)
+            atomic_fetch_and_explicit(&m->state, ~MUTEX_WAITING, memory_order_relaxed);
+    }
+    else
+    {
+        atomic_fetch_and_explicit(&m->state, ~MUTEX_WAITING, memory_order_relaxed);
+    }
     spin_unlock(&m->splock);
 
     g->state = UI_WAITING;
