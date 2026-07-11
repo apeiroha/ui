@@ -925,19 +925,24 @@ ui_wakeup(ui_Goro *g)
 void
 ui_vcpu_idle(ui_vCPU *v)
 {
-    uint64_t now = ui_now_us();
     atomic_store(&v->idle, 0);
-    ui_sleepq_expire(v, now);
+
+    /* Try to find work without touching io_uring or clock */
     if (!ui_runq_empty(v)) return;
     if (ui_steal_work(v)) return;
 
+    /* Drain io_uring completions if any are pending */
     if (v->uring_pending > 0 || v->has_multishot) {
         ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
         ui_uring_drain(v);
         if (!ui_runq_empty(v)) return;
     }
 
-    /* Compute max block time */
+    /* Compute max block time. Read clock once — sleepq_expire
+     * and wait_us calculation share the same timestamp. */
+    uint64_t now = ui_now_us();
+    ui_sleepq_expire(v, now);
+
     uint64_t wait_us = 100000; /* 100ms default */
     if (atomic_load(&g_ui_sched.active_count) > 0)
         wait_us = 1000; /* active runtime: poll for steal every 1ms */
@@ -949,6 +954,9 @@ ui_vcpu_idle(ui_vCPU *v)
             wait_us = delta;
     }
 
+    /* Set idle flag and do final check before blocking.
+     * drain_standbyq catches cross-vCPU wakeups; steal_work
+     * catches work that appeared on other vCPUs. */
     atomic_store(&v->idle, 1);
     ui_drain_standbyq(v);
     ui_sleepq_expire(v, ui_now_us());
@@ -967,9 +975,7 @@ ui_vcpu_idle(ui_vCPU *v)
         }
     }
 
-    /* Use io_uring-based idle wait (POLL_ADD on eventfd + TIMEOUT).
-     * Replaces the earlier ppoll(eventfd + ring_fd) with a single
-     * syscall that handles I/O completions and wakeup events. */
+    /* Block until work arrives or timeout */
     ui_uring_idle_wait(v, wait_us);
     atomic_store(&v->idle, 0);
 }
