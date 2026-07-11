@@ -24,11 +24,14 @@ spin_unlock(atomic_int *l)
  *   bit 0 (MUTEX_LOCKED)  — lock is held
  *   bit 1 (MUTEX_WAITING) — one or more goroutines are waiting on waitq
  *
- * Lock fast path: CAS 0 → LOCKED
- * Unlock fast path: fetch_sub LOCKED → if old == LOCKED, done.
+ * Lock fast path: fetch_or(state, LOCKED); if old had no LOCKED → acquired.
+ *   Unlike CAS(0→LOCKED), this succeeds even when WAITING is set
+ *   (e.g. after a goroutine is woken from waitq and retries).
+ *
+ * Unlock fast path: fetch_sub(state, LOCKED); if old == LOCKED → done.
  *
  * Lock contention: under splock, set WAITING, re-check LOCKED.
- *   If LOCKED not set (unlock raced ahead), acquire atomically.
+ *   If LOCKED not set (unlock raced ahead), set LOCKED with fetch_or.
  *   If LOCKED still set, push to waitq and park.
  *
  * Unlock slow path (WAITING was set): under splock, wake one waiter.
@@ -52,16 +55,19 @@ ui_MutexNew(void)
     return (uint64_t)(uintptr_t)m;
 }
 
-/* Fast lock: try atomic CAS first, only park on contention */
+/* Fast lock: try fetch_or first, only park on contention */
 void
 ui_MutexLock(uint64_t mh)
 {
     ui_mutex *m = (ui_mutex *)(uintptr_t)mh;
     if (!m) return;
 
-    /* Fast path: try to acquire without parking */
-    if (atomic_compare_exchange_strong_explicit(&m->state, &(int){0}, MUTEX_LOCKED,
-                                                 memory_order_acquire, memory_order_relaxed))
+    /* Fast path: atomically set LOCKED; succeed if LOCKED was not set.
+     * Using fetch_or instead of CAS(0→LOCKED) allows acquisition even
+     * when the WAITING flag is set (common after wake-from-waitq). */
+    int old = atomic_fetch_or_explicit(&m->state, MUTEX_LOCKED,
+                                        memory_order_acquire);
+    if (!(old & MUTEX_LOCKED))
         return;  /* Got it! */
 
     /* Contended: park goroutine - protect waitq with spinlock */
@@ -76,34 +82,26 @@ ui_MutexLock(uint64_t mh)
      * The splock serializes with the unlock slow path; the unlock fast
      * path (fetch_sub returning MUTEX_LOCKED) means no WAITING existed
      * when it ran, so no concurrent unlocker is in the slow path. */
-    int old = atomic_fetch_or_explicit(&m->state, MUTEX_WAITING,
-                                        memory_order_relaxed);
+    old = atomic_fetch_or_explicit(&m->state, MUTEX_WAITING,
+                                    memory_order_relaxed);
 
     if (!(old & MUTEX_LOCKED))
     {
-        /* Lock was released before we set WAITING. Current state is
-         * old|WAITING = 2 (or 2 if old was 2). Acquire atomically:
-         * CAS from WAITING-only to LOCKED.
-         *
-         * IMPORTANT: preserve WAITING if there are other goroutines
-         * still on the waitq, so the unlock path wakes them. */
-        int has_other_waiters = (m->waitq.head != NULL);
-        int new_state = MUTEX_LOCKED | (has_other_waiters ? MUTEX_WAITING : 0);
-
-        int expected = old | MUTEX_WAITING;  /* always 2 */
-        if (atomic_compare_exchange_strong_explicit(&m->state, &expected,
-                                                     new_state,
-                                                     memory_order_acquire,
-                                                     memory_order_relaxed))
+        /* Lock was released before we set WAITING.  Current state is
+         * old|WAITING (no LOCKED).  Acquire by setting LOCKED.
+         * fetch_or returns the value before addition; if old had no
+         * LOCKED, we successfully acquired. */
+        int prev = atomic_fetch_or_explicit(&m->state, MUTEX_LOCKED,
+                                             memory_order_relaxed);
+        if (!(prev & MUTEX_LOCKED))
         {
             spin_unlock(&m->splock);
             return;  /* Got the lock without parking */
         }
-        /* CAS failed — state changed under us (e.g. another waiter
-         * also set WAITING). Fall through to waitq. */
+        /* Someone else acquired before our fetch_or(LOCKED) — park. */
     }
 
-    /* LOCKED is still set (or CAS failed) — actually park */
+    /* LOCKED is still set — actually park */
     ui_waitq_push(&m->waitq, g);
     spin_unlock(&m->splock);
     ui_switch(&g->rsp, v->sched_rsp);
@@ -117,9 +115,9 @@ ui_MutexTryLock(uint64_t mh)
     ui_mutex *m = (ui_mutex *)(uintptr_t)mh;
     if (!m) return false;
 
-    int expected = 0;
-    return atomic_compare_exchange_strong_explicit(&m->state, &expected, MUTEX_LOCKED,
-                                                     memory_order_acquire, memory_order_relaxed);
+    int old = atomic_fetch_or_explicit(&m->state, MUTEX_LOCKED,
+                                        memory_order_acquire);
+    return !(old & MUTEX_LOCKED);
 }
 
 void
