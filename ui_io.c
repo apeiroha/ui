@@ -369,6 +369,23 @@ ui_uring_drain(ui_vCPU *v)
                 rm->active = 0;
             }
         }
+        else if (cqe->user_data & 2)
+        {
+            /* ── Batch recv completion ── */
+            struct ui_RecvBatch *b = (struct ui_RecvBatch *)(uintptr_t)(cqe->user_data & ~3ULL);
+            if (!b->active)
+                goto skip;
+            __sync_fetch_and_add(&b->count, 1);
+            if (b->count == 1)
+            {
+                if (b->goro != v->current)
+                    ui_wakeup(b->goro);
+                else
+                    b->goro->state = UI_READY;
+            }
+            if (v->uring_pending > 0)
+                v->uring_pending--;
+        }
         else if (cqe->user_data != 0)
         {
             /* ── Regular goro I/O completion ──
@@ -917,4 +934,79 @@ fallback:
         }
         return total;
     }
+}
+
+int
+ui_RecvBatch(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags)
+{
+    ui_vCPU *v = ui_this_vcpu;
+    if (!v || !v->current) return -1;
+    if (ui_vcpu_ensure_ring(v) < 0) return -1;
+    if (vlen == 0) return 0;
+
+    {
+        unsigned head = *v->sq_head;
+        unsigned used = *v->sq_tail - head;
+        if (used + vlen + 1 > *v->sq_ring_entries) {
+            ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
+            ui_uring_drain(v);
+        }
+        head = *v->sq_head;
+        if (*v->sq_tail - head + vlen + 1 > *v->sq_ring_entries)
+            return -1;
+    }
+
+    ui_Goro *cur = v->current;
+    unsigned tail = *v->sq_tail;
+    unsigned mask = *v->sq_ring_mask;
+
+    struct ui_RecvBatch batch;
+    batch.goro = cur;
+    batch.count = 0;
+    batch.active = 1;
+
+    for (unsigned i = 0; i < vlen; i++) {
+        struct io_uring_sqe *sqe = &v->sq_sqes[(tail + i) & mask];
+        memset(sqe, 0, sizeof(*sqe));
+        sqe->opcode = IORING_OP_RECVMSG;
+        sqe->fd = fd;
+        sqe->addr = (unsigned long)(uintptr_t)&msgvec[i].msg_hdr;
+        sqe->len = 1;
+        sqe->msg_flags = (unsigned)flags;
+        sqe->user_data = (uint64_t)(uintptr_t)&batch | 2;
+    }
+
+    cur->io_pending = 1;
+    ui_uring_submit_batch(v, vlen);
+
+    cur->io_token = (uint64_t)(uintptr_t)cur;
+    ui_uring_drain(v);
+    if (batch.count == 0) {
+        cur->state = UI_WAITING;
+        while (batch.count == 0 && cur->io_pending) {
+            cur->state = UI_WAITING;
+            ui_switch(&cur->rsp, v->sched_rsp);
+            ui_uring_drain(v);
+        }
+    }
+
+    /* Cancel remaining pending operations */
+    if (vlen > (unsigned)batch.count) {
+        struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
+        if (sqe) {
+            memset(sqe, 0, sizeof(*sqe));
+            sqe->opcode = IORING_OP_ASYNC_CANCEL;
+            sqe->fd = fd;
+            sqe->off = IORING_ASYNC_CANCEL_FD |
+                       IORING_ASYNC_CANCEL_ALL |
+                       IORING_ASYNC_CANCEL_OP;
+            sqe->addr = IORING_OP_RECVMSG;
+            sqe->user_data = 0;
+            cur->io_pending = 1;
+            ui_uring_submit(v);
+        }
+    }
+
+    batch.active = 0;
+    return batch.count;
 }

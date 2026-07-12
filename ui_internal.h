@@ -269,4 +269,12 @@ void          ui_waitq_wake_one(ui_WaitQ *q);
 void          ui_waitq_wake_all(ui_WaitQ *q);
 int           ui_waitq_count(ui_WaitQ *q);
 
+/* ── Batch recv — struct stored on caller's stack ── */
+struct ui_RecvBatch {
+    ui_Goro  *goro;
+    int       count;   /* atomic: completions seen */
+    int       active;  /* 1 while caller is still waiting */
+    int       pad;
+};
+
 #endif

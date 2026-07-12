@@ -90,3 +90,4 @@ void                 ui_RecvMultiClose(struct ui_RecvMulti *rm);
 /* ── Batch send/recv (UDP mmsg) ── */
 int ui_SendMMsg(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags);
 int ui_RecvMMsg(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags);
+int ui_RecvBatch(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags);

@@ -71,6 +71,7 @@ extern func Connect(fd int, addr *uint8, addrlen uint32) int
 extern func Accept(fd int, addr *uint8, addrlen *uint32) int
 extern func Close(fd int) int
 extern func Shutdown(fd int, how int) int
+extern func RecvBatch(fd int, msgvec *uint8, vlen int, flags int) int
 
 // ── Multishot recvmsg + buffer ring ──
 extern func RecvMulti(fd int, cb uintptr, ctx *uint8) *uint8
