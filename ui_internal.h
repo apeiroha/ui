@@ -66,6 +66,10 @@ struct ui_RecvMulti
 #define UI_GORO_POOL_SIZE   16384  /* max cached goros + stacks per process */
 #define UI_LOCAL_GORO_POOL_SIZE 2048
 
+/* I/O fairness: after this many consecutive fast-path I/O completions,
+ * the goro yields voluntarily to let others run.  0 = disabled. */
+#define UI_YIELD_IO_MASK    1023   /* yield every 1024th I/O */
+
 enum
 {
     UI_READY,
@@ -173,6 +177,7 @@ typedef struct
     ui_Goro         *standbyq_head;
     ui_Goro         *standbyq_tail;
     pthread_spinlock_t standbyq_lock;
+    uint32_t         io_count;   /* sequential I/O completions, for fair yield */
 } ui_vCPU;
 
 typedef struct

@@ -421,8 +421,14 @@ ui_io_submit_and_wait(ui_vCPU *v, struct io_uring_sqe *sqe)
      * ui_uring_drain will CAS io_pending 1→0 and set io_result.
      * Return immediately — no state change needed, the goro is still running. */
     ui_uring_drain(v);
-    if (!cur->io_pending)
+    if (!cur->io_pending) {
+        /* Fast path: I/O completed inline, no yield.
+         * Yield every N completions for fairness (prevent I/O busy-loop from
+         * starving other goros in cooperative scheduling). */
+        if (UI_YIELD_IO_MASK && (++v->io_count & UI_YIELD_IO_MASK) == 0)
+            ui_Yield();
         return cur->io_result;
+    }
 
     cur->state = UI_WAITING;
 
