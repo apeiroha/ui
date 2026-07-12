@@ -62,6 +62,8 @@ void     ui_RwLockFree(uint64_t rw);
 
 ssize_t  ui_Read(int fd, void *buf, size_t count);
 ssize_t  ui_Write(int fd, const void *buf, size_t count);
+ssize_t  ui_TryRead(int fd, void *buf, size_t count);
+ssize_t  ui_TryWrite(int fd, const void *buf, size_t count);
 int      ui_Open(const char *pathname, int flags, ...);
 
 ssize_t  ui_Recv(int fd, void *buf, size_t count, int flags);

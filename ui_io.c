@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -479,6 +480,26 @@ ui_Write(int fd, const void *buf, size_t count)
     sqe->len = count;
     sqe->off = -1;
     return ui_io_submit_and_wait(v, sqe);
+}
+
+ssize_t
+ui_TryRead(int fd, void *buf, size_t count)
+{
+    ssize_t n = read(fd, buf, count);
+    if (n >= 0) return n;
+    if (errno == EAGAIN || errno == EWOULDBLOCK)
+        return ui_Read(fd, buf, count);
+    return -1;
+}
+
+ssize_t
+ui_TryWrite(int fd, const void *buf, size_t count)
+{
+    ssize_t n = write(fd, buf, count);
+    if (n >= 0) return n;
+    if (errno == EAGAIN || errno == EWOULDBLOCK)
+        return ui_Write(fd, buf, count);
+    return -1;
 }
 
 int

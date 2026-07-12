@@ -59,6 +59,8 @@ extern func RwLockFree(rw uint64)
 // ── Async I/O (io_uring) ──
 extern func Read(fd int, buf *uint8, count uint) int
 extern func Write(fd int, buf *uint8, count uint) int
+extern func TryRead(fd int, buf *uint8, count uint) int
+extern func TryWrite(fd int, buf *uint8, count uint) int
 extern func Open(pathname *uint8, flags int) int
 extern func Recv(fd int, buf *uint8, count uint, flags int) int
 extern func Send(fd int, buf *uint8, count uint, flags int) int
