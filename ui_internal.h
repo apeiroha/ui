@@ -67,8 +67,10 @@ struct ui_RecvMulti
 #define UI_LOCAL_GORO_POOL_SIZE 2048
 
 /* I/O fairness: after this many consecutive fast-path I/O completions,
- * the goro yields voluntarily to let others run.  0 = disabled. */
-#define UI_YIELD_IO_MASK    1023   /* yield every 1024th I/O */
+ * the goro yields voluntarily to let others run.  0 = disabled.
+ * Can be overridden via env UI_YIELD_IO_MASK at ui_Init() time. */
+#define UI_YIELD_IO_MASK_DEFAULT  255   /* yield every 256th I/O */
+extern uint32_t ui_yield_io_mask;
 
 enum
 {

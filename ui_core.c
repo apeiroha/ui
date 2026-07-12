@@ -14,6 +14,10 @@ ui_Sched g_ui_sched;
 
 __thread __attribute__((tls_model("initial-exec"))) ui_vCPU *ui_this_vcpu;
 
+/* I/O fairness yield mask: yield every (mask+1)th fast-path I/O.
+ * 0 = disabled.  Override via env UI_YIELD_IO_MASK. */
+uint32_t ui_yield_io_mask = UI_YIELD_IO_MASK_DEFAULT;
+
 void
 ui_runq_init(ui_vCPU *v)
 {
@@ -615,6 +619,8 @@ ui_Init(void)
     if (env_ncpus) { int n = atoi(env_ncpus); if (n >= 1 && n <= UI_MAX_VCPUS) ncpus = n; }
     const char *env_release = getenv("UI_STACK_RELEASE_ON_RECYCLE");
     g_ui_sched.release_stacks_on_recycle = env_release && atoi(env_release) != 0;
+    const char *env_yield = getenv("UI_YIELD_IO_MASK");
+    if (env_yield) { int n = atoi(env_yield); if (n >= 0) ui_yield_io_mask = (uint32_t)n; }
     g_ui_sched.nvcpus = ncpus;
     atomic_store(&g_ui_sched.next_vcpu, 0);
     g_ui_sched.vcpus = calloc((size_t)ncpus, sizeof(ui_vCPU));
