@@ -251,27 +251,78 @@ ui_CondFree(uint64_t ch)
     free((void *)(uintptr_t)ch);
 }
 
-/* ── Read-Write Lock ── */
+/* ── Read-Write Lock (per-vCPU sharded reader count) ──
+ *
+ * Reader count is sharded per vCPU: RLock/RUnlock touch ONLY the caller's
+ * shard, which is its own cache line (64B stride), so the uncontended
+ * read path is lock-free and never writes a line shared with other vCPUs.
+ *
+ * Correctness (same argument as Go's sync.RWMutex):
+ *   - reader fast path:  shard++ (seq_cst) → double-check writer (acquire)
+ *   - writer:            writer=1 (seq_cst) → scan all shards (acquire)
+ * A reader whose double-check saw writer==0 published its shard++ before
+ * the writer's store in the seq_cst total order, so the writer's scan
+ * (which happens after the store) is guaranteed to observe it.  A reader
+ * that sees writer==1 retracts and takes the slow path.  Hence the writer
+ * may enter only once the shard sum is zero — no reader is inside.
+ *
+ * The goro records its shard at RLock so RUnlock decrements the same
+ * shard even if the goro migrates between the two. */
 
 typedef struct
 {
     atomic_int splock;
-    int         readers;
-    int         writer;
-    int         write_waiters;
+    atomic_int writer;           /* 1 = write lock held (by the claimer) */
+    int         claimed;         /* a writer holds writer=1 and waits in claim_wait for readers to drain */
+    atomic_int  write_waiters;   /* writers queued behind the claim */
     ui_WaitQ    read_wait;
-    ui_WaitQ    write_wait;
+    ui_WaitQ    write_wait;      /* queued writers (awaiting the lock) */
+    ui_WaitQ    claim_wait;      /* the claiming writer (awaiting zero readers) */
+    int         nshards;
+    int          *shards;    /* nshards × 64B, one cache line per shard */
 } ui_rwlock;
 
 uint64_t
 ui_RwLockNew(void)
 {
     ui_rwlock *rw = calloc(1, sizeof(ui_rwlock));
-    if (rw) {
-        ui_waitq_init(&rw->read_wait);
-        ui_waitq_init(&rw->write_wait);
-    }
+    if (!rw) return 0;
+    int n = g_ui_sched.nvcpus > 0 ? g_ui_sched.nvcpus : 1;
+    rw->nshards = n;
+    rw->shards = calloc((size_t)n, 64);
+    if (!rw->shards) { free(rw); return 0; }
+    ui_waitq_init(&rw->read_wait);
+    ui_waitq_init(&rw->write_wait);
+    ui_waitq_init(&rw->claim_wait);
     return (uint64_t)(uintptr_t)rw;
+}
+
+static int
+ui_rwlock_scan(ui_rwlock *rw)
+{
+    int total = 0;
+    for (int i = 0; i < rw->nshards; i++)
+        total += __atomic_load_n(&rw->shards[i], __ATOMIC_ACQUIRE);
+    return total;
+}
+
+/* Reader shard update: the shard is a private cache line (no contention),
+ * so the seq_cst RMW is uncontended — its cost is the lock prefix, not
+ * cache-line bouncing.  The seq_cst ordering is what makes a reader's
+ * count visible to a claiming writer's scan (and vice versa). */
+static inline void
+ui_rwlock_shard_add(ui_rwlock *rw, int sh, int delta)
+{
+    __atomic_fetch_add(&rw->shards[sh], delta, __ATOMIC_SEQ_CST);
+}
+
+static int
+ui_rwlock_shard_of(ui_rwlock *rw, ui_vCPU *v, ui_Goro *g)
+{
+    int sh = v ? v->id : 0;
+    if (sh >= rw->nshards) sh = 0;
+    if (g) g->rwlock_shard = sh;
+    return sh;
 }
 
 void
@@ -280,18 +331,47 @@ ui_RwLockRLock(uint64_t rwh)
     ui_rwlock *rw = (ui_rwlock *)(uintptr_t)rwh;
     if (!rw) return;
 
+    ui_vCPU *v = ui_this_vcpu;
+    ui_Goro *g = v ? v->current : NULL;
+    int sh = ui_rwlock_shard_of(rw, v, g);
+
+    /* Fast path: no writer → count on our shard only.  The seq_cst shard++
+     * is uncontended (private cache line); the writer load is a shared-line
+     * READ (cheap, no bus lock).  write_waiters>0 implies a writer exists,
+     * so the single writer check covers both. */
+    if (!atomic_load_explicit(&rw->writer, memory_order_acquire))
+    {
+        ui_rwlock_shard_add(rw, sh, 1);
+        if (!atomic_load_explicit(&rw->writer, memory_order_acquire))
+            return;   /* got the read lock */
+        /* A writer claimed between our check and our count.  Retract and
+         * treat the retraction like an RUnlock: the claimer's scan may
+         * have seen our count, so if we just drained the readers, wake it.
+         * Otherwise nobody would (we never held the lock → no RUnlock). */
+        ui_rwlock_shard_add(rw, sh, -1);
+        if (atomic_load_explicit(&rw->writer, memory_order_acquire))
+        {
+            spin_lock(&rw->splock);
+            if (rw->claimed && ui_rwlock_scan(rw) == 0)
+                ui_waitq_wake_one(&rw->claim_wait);
+            spin_unlock(&rw->splock);
+        }
+    }
+
+    /* Slow path: writer present or contended. */
     for (;;)
     {
+        v = ui_this_vcpu;
+        g = v ? v->current : NULL;
+        sh = ui_rwlock_shard_of(rw, v, g);
         spin_lock(&rw->splock);
         if (!rw->writer && rw->write_waiters == 0)
         {
-            rw->readers++;
+            ui_rwlock_shard_add(rw, sh, 1);
             spin_unlock(&rw->splock);
             return;
         }
         {
-            ui_vCPU *v = ui_this_vcpu;
-            ui_Goro *g = v ? v->current : NULL;
             if (v && g)
             {
                 g->state = UI_WAITING;
@@ -314,10 +394,23 @@ ui_RwLockRUnlock(uint64_t rwh)
     ui_rwlock *rw = (ui_rwlock *)(uintptr_t)rwh;
     if (!rw) return;
 
+    ui_vCPU *v = ui_this_vcpu;
+    ui_Goro *g = v ? v->current : NULL;
+    int sh = (g && g->rwlock_shard >= 0 && g->rwlock_shard < rw->nshards)
+                 ? g->rwlock_shard
+                 : (v ? v->id : 0);
+
+    ui_rwlock_shard_add(rw, sh, -1);
+
+    /* No writer claiming → done (common case, zero extra cost).  A queued
+     * writer (write_waiters>0) is woken by WUnlock, not by readers. */
+    if (!atomic_load_explicit(&rw->writer, memory_order_acquire))
+        return;
+
+    /* A writer may be waiting: wake the claimer if we were the last reader. */
     spin_lock(&rw->splock);
-    rw->readers--;
-    if (rw->readers == 0 && rw->write_waiters > 0)
-        ui_waitq_wake_one(&rw->write_wait);
+    if (rw->claimed && ui_rwlock_scan(rw) == 0)
+        ui_waitq_wake_one(&rw->claim_wait);
     spin_unlock(&rw->splock);
 }
 
@@ -327,19 +420,44 @@ ui_RwLockWLock(uint64_t rwh)
     ui_rwlock *rw = (ui_rwlock *)(uintptr_t)rwh;
     if (!rw) return;
 
+    int resuming = 0;
     for (;;)
     {
+        ui_vCPU *v = ui_this_vcpu;
+        ui_Goro *g = v ? v->current : NULL;
+
         spin_lock(&rw->splock);
-        if (rw->readers == 0 && !rw->writer)
+
+        if (resuming)
         {
-            rw->writer = 1;
-            spin_unlock(&rw->splock);
-            return;
+            /* We claimed writer=1 earlier and were parked in claim_wait;
+             * the write claim is still ours (no one else can hold it).
+             * Re-scan: if readers have drained, acquire and return. */
+            if (ui_rwlock_scan(rw) == 0)
+            {
+                rw->claimed = 0;
+                spin_unlock(&rw->splock);
+                return;   /* got the write lock */
+            }
+            if (v && g)
+            {
+                g->state = UI_WAITING;
+                ui_waitq_push(&rw->claim_wait, g);
+                spin_unlock(&rw->splock);
+                ui_switch(&g->rsp, v->sched_rsp);
+            }
+            else
+            {
+                spin_unlock(&rw->splock);
+                return;
+            }
+            continue;
         }
-        rw->write_waiters++;
+
+        if (rw->claimed)
         {
-            ui_vCPU *v = ui_this_vcpu;
-            ui_Goro *g = v ? v->current : NULL;
+            /* Another writer holds the claim and waits for readers. */
+            rw->write_waiters++;
             if (v && g)
             {
                 g->state = UI_WAITING;
@@ -352,6 +470,52 @@ ui_RwLockWLock(uint64_t rwh)
                 spin_unlock(&rw->splock);
                 return;
             }
+            continue;
+        }
+
+        if (!rw->writer && !rw->claimed)
+        {
+            /* Acquire the write claim first (seq_cst) so new readers either
+             * see it (slow path) or their count is guaranteed visible to
+             * our scan below (seq_cst total order). */
+            atomic_store_explicit(&rw->writer, 1, memory_order_seq_cst);
+            if (ui_rwlock_scan(rw) == 0)
+            {
+                spin_unlock(&rw->splock);
+                return;   /* got the write lock */
+            }
+            /* Readers active: park while holding the claim; RUnlock wakes
+             * us (via claim_wait) when the last reader exits. */
+            rw->claimed = 1;
+            resuming = 1;
+            if (v && g)
+            {
+                g->state = UI_WAITING;
+                ui_waitq_push(&rw->claim_wait, g);
+                spin_unlock(&rw->splock);
+                ui_switch(&g->rsp, v->sched_rsp);
+            }
+            else
+            {
+                spin_unlock(&rw->splock);
+                return;
+            }
+            continue;
+        }
+
+        /* Write lock held by someone else (claiming or holding): queue up. */
+        rw->write_waiters++;
+        if (v && g)
+        {
+            g->state = UI_WAITING;
+            ui_waitq_push(&rw->write_wait, g);
+            spin_unlock(&rw->splock);
+            ui_switch(&g->rsp, v->sched_rsp);
+        }
+        else
+        {
+            spin_unlock(&rw->splock);
+            return;
         }
     }
 }
@@ -363,7 +527,8 @@ ui_RwLockWUnlock(uint64_t rwh)
     if (!rw) return;
 
     spin_lock(&rw->splock);
-    rw->writer = 0;
+    atomic_store_explicit(&rw->writer, 0, memory_order_release);
+    rw->claimed = 0;   /* defensive: claim is always cleared on acquire */
     if (rw->write_waiters > 0)
     {
         rw->write_waiters--;
@@ -379,5 +544,10 @@ ui_RwLockWUnlock(uint64_t rwh)
 void
 ui_RwLockFree(uint64_t rwh)
 {
-    free((void *)(uintptr_t)rwh);
+    ui_rwlock *rw = (ui_rwlock *)(uintptr_t)rwh;
+    if (rw)
+    {
+        free(rw->shards);
+        free(rw);
+    }
 }

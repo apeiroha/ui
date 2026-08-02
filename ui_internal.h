@@ -131,6 +131,8 @@ struct ui_Goro
 
     uint64_t  wakeup_time;  /* absolute us (monotonic), for sleepq */
 
+    int       rwlock_shard;  /* shard used by the currently held read lock */
+
     void     *chan_ptr;
     void     *chan_recv_ptr;  /* dest buffer for recv handoff */
     const void *chan_send_ptr;/* src data for send handoff */
