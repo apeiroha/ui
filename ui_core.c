@@ -27,7 +27,7 @@ ui_runq_init(ui_vCPU *v)
 }
 
 /* Insert into runq (caller must hold runq_lock) */
-static void
+void
 ui_runq_insert_locked(ui_vCPU *v, ui_Goro *g);
 
 void
@@ -39,7 +39,7 @@ ui_runq_insert(ui_vCPU *v, ui_Goro *g)
 }
 
 /* Insert into runq (caller must hold runq_lock) */
-static void
+void
 ui_runq_insert_locked(ui_vCPU *v, ui_Goro *g)
 {
     if (g->state != UI_READY)

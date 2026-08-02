@@ -241,6 +241,7 @@ void         *ui_stack_bottom(ui_Goro *g);
 
 void          ui_runq_init(ui_vCPU *v);
 void          ui_runq_insert(ui_vCPU *v, ui_Goro *g);
+void          ui_runq_insert_locked(ui_vCPU *v, ui_Goro *g); /* caller holds runq_lock */
 void          ui_runq_remove(ui_Goro *g);
 int           ui_runq_empty(ui_vCPU *v);
 

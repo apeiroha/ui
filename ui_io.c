@@ -425,7 +425,33 @@ ui_uring_drain(ui_vCPU *v)
             if (__sync_bool_compare_and_swap(&g->io_pending, 1, 0)) {
                 g->io_result = cqe->res;
                 if (g != v->current) {
-                    ui_wakeup(g);
+                    /* CQE arrived on v's ring → the goro submitted on v and
+                     * parked on v (a parked goro is not in any runq, so it
+                     * cannot be stolen and its home_vcpu cannot change).
+                     * Enqueue directly on THIS vCPU's runq and verify it
+                     * actually landed — a silent insert failure would leave
+                     * the goro parked forever with io_pending==0.  (The
+                     * generic ui_wakeup() path remains for the rare
+                     * home-mismatch case.) */
+                    if (g->home_vcpu == v->id)
+                    {
+                        g->state = UI_READY;
+                        pthread_spin_lock(&v->runq_lock);
+                        ui_runq_insert_locked(v, g);
+                        if (g->prev == NULL)
+                        {
+                            fprintf(stderr,
+                                    "\nFATAL: CQE wakeup failed to enqueue "
+                                    "goro %p on v%d (state=%d)\n",
+                                    (void *)g, v->id, g->state);
+                            _exit(1);
+                        }
+                        pthread_spin_unlock(&v->runq_lock);
+                    }
+                    else
+                    {
+                        ui_wakeup(g);
+                    }
                 } else {
                     g->state = UI_READY;
                 }
