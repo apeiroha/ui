@@ -8,8 +8,14 @@
 static void
 spin_lock(atomic_int *l)
 {
+    int backoff = 1;
     while (atomic_exchange(l, 1))
-        __builtin_ia32_pause();
+    {
+        for (int i = 0; i < backoff; i++)
+            __builtin_ia32_pause();
+        if (backoff < 64)
+            backoff <<= 1;
+    }
 }
 
 static void
@@ -95,6 +101,13 @@ ui_MutexLock(uint64_t mh)
                                              memory_order_relaxed);
         if (!(prev & MUTEX_LOCKED))
         {
+            /* Got the lock without parking.  We set the WAITING hint above
+             * but never parked — clear it if there are no real waiters,
+             * otherwise every future unlock takes the slow path and
+             * hammers splock.  We hold splock, so the waitq is stable. */
+            if (!m->waitq.head)
+                atomic_fetch_and_explicit(&m->state, ~MUTEX_WAITING,
+                                           memory_order_relaxed);
             spin_unlock(&m->splock);
             return;  /* Got the lock without parking */
         }

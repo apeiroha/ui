@@ -14,6 +14,7 @@ struct ui_StackArena
     size_t reserve;
     int slots;
     uint64_t free_mask;
+    uint64_t rw_mask;   /* slots whose commit region is already RW */
     ui_StackArena *next;
 };
 
@@ -88,12 +89,20 @@ ui_stack_init_arena(ui_Goro *g, size_t reserve, size_t commit, int page_size)
 
     void *base = (char *)arena->base + (size_t)slot * reserve;
     void *commit_start = (char *)base + reserve - commit;
-    if (mprotect(commit_start, commit, PROT_READ | PROT_WRITE) < 0)
+    /* Skip the mprotect when the slot is already RW (reused after a
+     * destroy that kept the pages warm): the NONE→RW round trip is a
+     * ~2-4us syscall, the same-prot call ~0.8us, and skipping it is
+     * free since the commit region is exclusive to this arena slot. */
+    if (!(arena->rw_mask & (1ULL << slot)))
     {
-        pthread_mutex_lock(&g_ui_sched.stack_arena_lock);
-        arena->free_mask |= 1ULL << slot;
-        pthread_mutex_unlock(&g_ui_sched.stack_arena_lock);
-        return -1;
+        if (mprotect(commit_start, commit, PROT_READ | PROT_WRITE) < 0)
+        {
+            pthread_mutex_lock(&g_ui_sched.stack_arena_lock);
+            arena->free_mask |= 1ULL << slot;
+            pthread_mutex_unlock(&g_ui_sched.stack_arena_lock);
+            return -1;
+        }
+        arena->rw_mask |= 1ULL << slot;
     }
 
     g->stack_base = base;
@@ -135,7 +144,8 @@ ui_stack_destroy(ui_Goro *g)
     {
         if (!g_ui_sched.finalizing)
         {
-            mprotect(g->stack_base, g->stack_reserve, PROT_NONE);
+            /* Keep the slot committed (rw_mask stays set) so the next
+             * allocation skips the mprotect round trip entirely. */
             pthread_mutex_lock(&g_ui_sched.stack_arena_lock);
             g->stack_arena->free_mask |= 1ULL << g->stack_slot;
             pthread_mutex_unlock(&g_ui_sched.stack_arena_lock);

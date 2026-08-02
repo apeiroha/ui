@@ -6,6 +6,17 @@
 
 typedef struct ui_Chan ui_Chan;
 
+/* Send on a closed channel is a program error (Go panics).  The runtime
+ * has no panic machinery, so abort with a message like the
+ * stack-overflow path does. */
+static void
+ui_chan_send_closed_fatal(void)
+{
+    static const char msg[] = "\nui: fatal: send on closed channel\n";
+    write(2, msg, sizeof(msg) - 1);
+    _exit(1);
+}
+
 struct ui_Chan
 {
     void    *buf;
@@ -56,7 +67,11 @@ ui_ChanSend(uint64_t ch, const void *val)
     for (;;)
     {
         pthread_spin_lock(&c->lock);
-        if (c->closed) { pthread_spin_unlock(&c->lock); return; }
+        if (c->closed)
+        {
+            pthread_spin_unlock(&c->lock);
+            ui_chan_send_closed_fatal();
+        }
 
         /* Direct handoff: a recver is already waiting — bypass buffer.
          * Only safe when the wait node has no custom wake callback
@@ -251,22 +266,46 @@ ui_ChanFree(uint64_t ch)
 
 // ── Timer Channel ──
 
-typedef struct
+/* Timer registry: out_ch → timer context.  TimerStop finds the context,
+ * disarms it and wakes the sleeping timer goroutine so it exits without
+ * sending — no more "send into a closed channel" and no goro that stays
+ * alive until the deadline. */
+typedef struct ui_TimerCtx
 {
-    uint64_t ch;
-    unsigned int us;
-} ui_TimerArg;
+    uint64_t      out_ch;
+    unsigned int  us;
+    atomic_int    armed;
+    ui_Goro      *goro;    /* set by creator before the proc can run */
+    struct ui_TimerCtx *next;
+} ui_TimerCtx;
+
+static pthread_mutex_t g_timer_lock = PTHREAD_MUTEX_INITIALIZER;
+static ui_TimerCtx *g_timers = NULL;
 
 static void
-_ui_timer_proc(uintptr_t arg)
+_timer_proc(uintptr_t arg)
 {
-    ui_TimerArg *ta = (ui_TimerArg *)(uintptr_t)arg;
-    uint64_t ch = ta->ch;
-    unsigned int us = ta->us;
-    free(ta);
+    ui_TimerCtx *ctx = (ui_TimerCtx *)arg;
+    uint64_t out = ctx->out_ch;
+    unsigned int us = ctx->us;
+    /* TimerStop may have disarmed us before we ever ran — exit now. */
+    if (!atomic_load_explicit(&ctx->armed, memory_order_acquire))
+        goto out;
     ui_SleepUs(us);
-    uint64_t val = 1;
-    ui_ChanSend(ch, &val);
+    /* Disarmed while sleeping (TimerStop woke us) → exit without sending. */
+    if (atomic_load_explicit(&ctx->armed, memory_order_acquire))
+    {
+        uint64_t val = 1;
+        ui_ChanSend(out, &val);
+    }
+out:
+    pthread_mutex_lock(&g_timer_lock);
+    for (ui_TimerCtx **p = &g_timers; *p; p = &(*p)->next)
+    {
+        if (*p == ctx) { *p = ctx->next; break; }
+    }
+    pthread_mutex_unlock(&g_timer_lock);
+    free(ctx);
 }
 
 uint64_t
@@ -280,29 +319,48 @@ ui_NewTimerUs(unsigned int us)
 {
     uint64_t ch = ui_NewChan(sizeof(uint64_t), 1);
     if (!ch) return 0;
-    ui_TimerArg *ta = malloc(sizeof(*ta));
-    if (!ta) {
+    ui_TimerCtx *ctx = calloc(1, sizeof(*ctx));
+    if (!ctx)
+    {
         ui_ChanFree(ch);
         return 0;
     }
-    ta->ch = ch;
-    ta->us = us;
-    ui_Go1Sized(_ui_timer_proc, (uintptr_t)ta, 0);
+    ctx->out_ch = ch;
+    ctx->us = us;
+    atomic_init(&ctx->armed, 1);
+    pthread_mutex_lock(&g_timer_lock);
+    ctx->next = g_timers;
+    g_timers = ctx;
+    pthread_mutex_unlock(&g_timer_lock);
+    ctx->goro = (ui_Goro *)(uintptr_t)ui_Go1Sized(_timer_proc, (uintptr_t)ctx, 0);
     return ch;
 }
 
 void
 ui_TimerStop(uint64_t ch)
 {
-    if (ch)
-        ui_ChanClose(ch);
+    if (!ch) return;
+    pthread_mutex_lock(&g_timer_lock);
+    for (ui_TimerCtx **p = &g_timers; *p; p = &(*p)->next)
+    {
+        if ((*p)->out_ch == ch)
+        {
+            atomic_store_explicit(&(*p)->armed, 0, memory_order_release);
+            ui_Goro *g = (*p)->goro;
+            pthread_mutex_unlock(&g_timer_lock);
+            /* Wake the sleeping timer goro so it exits promptly. */
+            if (g) ui_wakeup(g);
+            return;
+        }
+    }
+    pthread_mutex_unlock(&g_timer_lock);
 }
 
 uint64_t
 ui_TimerReset(uint64_t old_ch, unsigned int new_us)
 {
     if (old_ch)
-        ui_ChanClose(old_ch);
+        ui_TimerStop(old_ch);
     return ui_NewTimerUs(new_us);
 }
 

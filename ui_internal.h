@@ -47,6 +47,9 @@ struct ui_RecvMulti
 {
     int                     fd;
     int                     active;
+    int                     retired;       /* Close called; awaiting final CQEs */
+    int                     cancel_seen;   /* ASYNC_CANCEL completion reaped */
+    int                     terminal_seen; /* multishot terminal CQE reaped */
     ui_RecvMultiCb          cb;
     void                   *ctx;
     struct msghdr           msg;
@@ -71,6 +74,11 @@ struct ui_RecvMulti
  * Can be overridden via env UI_YIELD_IO_MASK at ui_Init() time. */
 #define UI_YIELD_IO_MASK_DEFAULT  255   /* yield every 256th I/O */
 extern uint32_t ui_yield_io_mask;
+
+/* Idle spin iterations before blocking (roughly 0.5us of pause loops).
+ * Cuts the eventfd+ppoll round trip for wakes that arrive while the
+ * vCPU is still on-CPU looking for work. */
+#define UI_IDLE_SPIN_ITERS        64
 
 enum
 {
@@ -108,6 +116,7 @@ struct ui_Goro
     void     *arg;
 
     int       state;
+    int       voluntary;   /* 1 = last yield was a voluntary ui_Yield */
     int       home_vcpu;
     int       first_run;
     int       sleepq_idx;  /* index in sleepq heap, -1 if not in sleepq */
@@ -166,6 +175,8 @@ typedef struct
     size_t           buf_ring_mmap_sz;
     int              has_multishot;
     struct ui_RecvMulti *active_multishot;
+    /* Closed multishots awaiting their cancel+terminal CQEs before free. */
+    struct ui_RecvMulti *retired_multishot;
     void            *sched_rsp;
     ui_Goro         *current;
     /* Sleep queue (binary min-heap by wakeup_time) */

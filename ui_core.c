@@ -392,6 +392,7 @@ ui_goro_recycle(ui_Goro *cg)
         cg->stack_slot = ss;
         cg->page_size = ps;
         cg->sleepq_idx = -1;
+        cg->state = UI_DEAD;   /* pooled goros must never look READY to stale wakes */
         v->goro_pool[v->goro_pool_count] = cg;
         v->goro_pool_count++;
         atomic_fetch_sub(&g_ui_sched.active_count, 1);
@@ -419,6 +420,7 @@ ui_goro_recycle(ui_Goro *cg)
         cg->stack_slot = ss;
         cg->page_size = ps;
         cg->sleepq_idx = -1;
+        cg->state = UI_DEAD;   /* pooled goros must never look READY to stale wakes */
         g_ui_sched.goro_pool[g_ui_sched.goro_pool_count] = cg;
         g_ui_sched.goro_pool_count++;
         pushed = 1;
@@ -458,11 +460,20 @@ ui_schedule(void)
     ui_Goro *cg = v->current;
     v->current = NULL;
 
-    /* Single lock region: re-insert READY goroutine + pick next */
+    /* Single lock region: re-insert READY goroutine + pick next.
+     * Only re-insert if the goro yielded VOLUNTARILY.  A goro that parked
+     * (state=WAITING) and was woken by another vCPU before its switch
+     * (state now READY) must NOT be re-inserted here — the waker's
+     * standbyq/runq entry is the only delivery path.  Re-inserting would
+     * double-reference the goro (runq + standbyq), and if it then dies,
+     * a stale standbyq drain would resurrect the recycled goro. */
     pthread_spin_lock(&v->runq_lock);
 
-    if (cg && cg->state == UI_READY)
+    if (cg && cg->state == UI_READY && cg->voluntary)
+    {
         ui_runq_insert_locked(v, cg);
+        cg->voluntary = 0;
+    }
 
     while ((g = v->runq_sentinel.next) != &v->runq_sentinel)
     {
@@ -510,6 +521,7 @@ ui_schedule(void)
         }
 
         g->state = UI_RUNNING;
+        g->voluntary = 0;
         v->current = g;
         if (g->first_run)
         {
@@ -674,6 +686,14 @@ ui_Fini(void)
                 rm = next;
             }
             v->active_multishot = NULL;
+            rm = v->retired_multishot;
+            while (rm)
+            {
+                struct ui_RecvMulti *next = rm->next;
+                free(rm);
+                rm = next;
+            }
+            v->retired_multishot = NULL;
         }
         ui_vcpu_destroy_buf_ring(&g_ui_sched.vcpus[i]);
         if (g_ui_sched.vcpus[i].sq_ring_ptr)
@@ -867,6 +887,7 @@ ui_Yield(void)
     ui_vCPU *v = ui_get_vcpu();
     if (!v || !v->current) return;
     v->current->state = UI_READY;
+    v->current->voluntary = 1;
     ui_switch(&v->current->rsp, v->sched_rsp);
 }
 
@@ -889,6 +910,7 @@ ui_SleepUs(unsigned int us)
     while (ui_sleepq_push(v, g, deadline) != 0)
     {
         g->state = UI_READY;
+        g->voluntary = 1;
         ui_switch(&g->rsp, v->sched_rsp);
         /* Woken up — retry sleep */
         deadline = ui_now_us() + us;
@@ -958,6 +980,30 @@ ui_vcpu_idle(ui_vCPU *v)
         if (delta > 10000000) delta = 10000000;
         if (delta < wait_us)
             wait_us = delta;
+    }
+
+    /* Brief spin before blocking: wakes that arrive while we are still
+     * on-CPU are consumed via standbyq drains with no eventfd write and
+     * no ppoll syscall round trip (the big cost of cross-vCPU wakeups
+     * under mutex/channel contention).  We are NOT idle yet, so wakers
+     * skip the eventfd write entirely and just push to the standbyq.
+     * The racy standbyq_head load keeps the loop cheap — the drain
+     * revalidates under the lock. */
+    for (int i = 0; i < UI_IDLE_SPIN_ITERS; i++)
+    {
+        __builtin_ia32_pause();
+        if (i & 7) continue;
+        if (v->standbyq_head)
+        {
+            ui_drain_standbyq(v);
+            if (!ui_runq_empty(v)) return;
+        }
+        if (v->uring_pending > 0 || v->has_multishot)
+        {
+            ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
+            ui_uring_drain(v);
+            if (!ui_runq_empty(v)) return;
+        }
     }
 
     /* Set idle flag and do final check before blocking.

@@ -85,9 +85,9 @@ typedef void (*ui_RecvMultiCb)(void *ctx, struct sockaddr *from,
 struct ui_RecvMulti *ui_RecvMulti(int fd, ui_RecvMultiCb cb, void *ctx);
 void                 ui_RecvMultiClose(struct ui_RecvMulti *rm);
 
-#endif
-
 /* ── Batch send/recv (UDP mmsg) ── */
 int ui_SendMMsg(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags);
 int ui_RecvMMsg(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags);
 int ui_RecvBatch(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags);
+
+#endif

@@ -327,11 +327,13 @@ ui_uring_idle_wait(ui_vCPU *v, uint64_t wait_us)
     }
 }
 
+static void
+ui_recvmulti_retire_free(ui_vCPU *v, struct ui_RecvMulti *rm);
+
 /* Drain all available CQEs, waking goroutines */
 void
 ui_uring_drain(ui_vCPU *v)
-{
-    if (!v || v->ring_fd < 0)
+{    if (!v || v->ring_fd < 0)
         return;
 
     unsigned head = *v->cq_head;
@@ -344,10 +346,31 @@ ui_uring_drain(ui_vCPU *v)
 
         if (cqe->user_data & 1)
         {
-            /* ── Multishot recvmsg completion ── */
+            /* ── Multishot recvmsg completion ──
+             * user_data encoding: bit0 = multishot op, bit2 = the
+             * ASYNC_CANCEL we submitted from ui_RecvMultiClose. */
             struct ui_RecvMulti *rm = (struct ui_RecvMulti *)(uintptr_t)(cqe->user_data & ~1ULL);
-            if (!rm->active)
+
+            if (cqe->user_data & 4)
+            {
+                /* Cancel completion — the kernel guarantees no further
+                 * CQEs for this rm after the multishot terminal + cancel
+                 * completion have both been reaped, so free here. */
+                rm->cancel_seen = 1;
+                if (rm->retired && rm->terminal_seen)
+                    ui_recvmulti_retire_free(v, rm);
                 goto skip;
+            }
+
+            if (cqe->res < 0 || !(cqe->flags & IORING_CQE_F_MORE))
+                rm->terminal_seen = 1;
+
+            if (!rm->active)
+            {
+                if (rm->retired && rm->terminal_seen && rm->cancel_seen)
+                    ui_recvmulti_retire_free(v, rm);
+                goto skip;
+            }
 
             if (cqe->flags & IORING_CQE_F_BUFFER && cqe->res > 0)
             {
@@ -737,11 +760,29 @@ ui_RecvMulti(int fd, ui_RecvMultiCb cb, void *ctx)
     return rm;
 }
 
+/* Free a retired multishot once both its terminal and cancel CQEs are in.
+ * Unlinks from the retired list (may be absent if the CQEs arrived before
+ * the close submitted the cancel — the free is still safe). */
+static void
+ui_recvmulti_retire_free(ui_vCPU *v, struct ui_RecvMulti *rm)
+{
+    for (struct ui_RecvMulti **p = &v->retired_multishot; *p; p = &(*p)->next)
+    {
+        if (*p == rm)
+        {
+            *p = rm->next;
+            break;
+        }
+    }
+    free(rm);
+}
+
 void
 ui_RecvMultiClose(struct ui_RecvMulti *rm)
 {
     if (!rm || !rm->active) return;
     rm->active = 0;
+    rm->retired = 1;
 
     ui_vCPU *v = ui_this_vcpu;
     if (v)
@@ -757,8 +798,14 @@ ui_RecvMultiClose(struct ui_RecvMulti *rm)
         if (!v->active_multishot)
             v->has_multishot = 0;
 
-        /* Submit async cancel to stop the kernel side, then drain
-         * so any residual CQEs are consumed before we free rm. */
+        /* Park the rm until the kernel confirms the cancel: the terminal
+         * multishot CQE and the ASYNC_CANCEL completion CQE must both be
+         * reaped before freeing, otherwise ui_uring_drain reads freed
+         * memory.  The rm is pushed to the retired list BEFORE submitting
+         * the cancel so a completion reaped by this drain can free it. */
+        rm->next = v->retired_multishot;
+        v->retired_multishot = rm;
+
         struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
         if (sqe)
         {
@@ -766,12 +813,16 @@ ui_RecvMultiClose(struct ui_RecvMulti *rm)
             sqe->addr = (uint64_t)(uintptr_t)rm | 1;
             sqe->off = IORING_ASYNC_CANCEL_USERDATA;
             sqe->fd = -1;
+            sqe->user_data = (uint64_t)(uintptr_t)rm | 5;
             ui_uring_submit(v);
         }
-        /* Drain any remaining CQEs referencing rm */
+        /* Drain any CQEs that completed synchronously. */
         ui_uring_drain(v);
     }
-    free(rm);
+    else
+    {
+        free(rm);
+    }
 }
 
 /* ── Batch submission ── */
