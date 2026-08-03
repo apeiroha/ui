@@ -441,6 +441,23 @@ ui_schedule(void)
     ui_vCPU *v = ui_get_vcpu();
     if (!v) return;
 
+    /* Detach the switching-out goro FIRST, before the standbyq drain /
+     * sleepq expiry / io_uring drain below.  ui_uring_drain looks at
+     * v->current to decide whether a completion belongs to a still-
+     * running goro (its own wait-loop drain — no enqueue, it resumes
+     * itself) or to a parked goro that must be delivered to a queue.
+     * If v->current still pointed at the just-parked goro, the drain
+     * would take the "current" branch and set state=UI_READY WITHOUT
+     * enqueueing it: the goro is then runnable but in no queue, and
+     * the voluntary-only re-insert below deliberately does not rescue
+     * woken goros — lost forever (io_pending already 0, nothing ever
+     * wakes it again).  With v->current == NULL the drains deliver
+     * parked goros through their normal paths: same-vCPU runq insert
+     * (with the FATAL verification in ui_uring_drain), cross-vCPU via
+     * ui_wakeup/standbyq. */
+    ui_Goro *cg = v->current;
+    v->current = NULL;
+
     /* Drain standbyq (process cross-vCPU wakers/steals) */
     ui_drain_standbyq(v);
 
@@ -457,22 +474,25 @@ ui_schedule(void)
     }
 
     ui_Goro *g = NULL;
-    ui_Goro *cg = v->current;
-    v->current = NULL;
 
     /* Single lock region: re-insert READY goroutine + pick next.
-     * Any goroutine that is READY when it yields must be re-inserted:
-     * both voluntary yields (ui_Yield) and io_uring/completion wakes
-     * that raced the switch need the runq entry.  Double insertion is
-     * prevented by the g->prev guard in ui_runq_insert_locked, so the
-     * unconditional re-insert is safe.
-     * (fcc4739's voluntary-only re-insert dropped a woken goroutine
-     * whose waker's runq insert was skipped/raced — the goro then sat
-     * READY in a runq whose vCPU slept in ppoll forever: UDP workers
-     * stalled with the receive queue pinned full.) */
+     * Only re-insert goros that yielded VOLUNTARILY (ui_Yield / the
+     * sleepq-full retry in ui_SleepUs).  A goro that parked
+     * (state=WAITING) and was woken while switching (state now READY)
+     * must NOT be re-inserted here: the waker owns its delivery (runq
+     * insert or standbyq push), and re-inserting would double-reference
+     * it — the standbyq drain's insert takes the HOME vCPU's runq_lock
+     * while this one takes ours, so the g->prev guard in
+     * ui_runq_insert_locked is not atomic across the two and both
+     * inserts can land (two vCPUs running the same goro, work-stealing
+     * FATAL / resurrected recycled goro).
+     * The "completion raced the switch" case that fcc4739 dropped is
+     * fixed at the source above: v->current is detached before
+     * ui_uring_drain, so the drain delivers the parked goro itself
+     * instead of taking the current-goro branch. */
     pthread_spin_lock(&v->runq_lock);
 
-    if (cg && cg->state == UI_READY)
+    if (cg && cg->state == UI_READY && cg->voluntary)
     {
         ui_runq_insert_locked(v, cg);
         cg->voluntary = 0;
