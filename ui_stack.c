@@ -203,22 +203,48 @@ ui_stack_grow(ui_Goro *g, void *fault_addr)
     top = base + (intptr_t)g->stack_reserve;
     fault = (intptr_t)fault_addr;
 
-    if (fault < base || fault >= top)
+    if (fault < base)
+    {
+        /* One guard page below the base: the committed region already
+         * reached the reserve (a doubling grow can fill it in a single
+         * step, so the next access lands here instead of on a NONE
+         * page inside the stack) — that is a stack overflow.  Faults
+         * further below are not stack usage; let the handler re-raise. */
+        return (fault >= base - (intptr_t)g->page_size) ? -2 : -1;
+    }
+    if (fault >= top)
         return -1;
 
     commit_start = top - (intptr_t)g->stack_committed;
     if (fault >= commit_start)
         return -1;
 
+    /* Minimum needed to cover the faulting page plus one slack page. */
     grow_needed = (size_t)(commit_start - fault) + (size_t)g->page_size;
     grow_needed = ALIGN_UP(grow_needed, (size_t)g->page_size);
 
-    new_committed = g->stack_committed + grow_needed;
+    /* Go-style doubling: commit at least twice the current size on
+     * every grow, so a deep recursion faults a bounded O(log n) times
+     * instead of once per page (each fault costs an mprotect syscall
+     * from the SIGSEGV handler).  Capped at the reserve; if even the
+     * whole reserve cannot cover the fault, it is a stack overflow. */
+    new_committed = g->stack_committed * 2;
+    if (new_committed > g->stack_reserve)
+        new_committed = g->stack_reserve;
+
+    if (g->stack_committed + grow_needed > new_committed)
+        new_committed = g->stack_committed + grow_needed;
+
     if (new_committed > g->stack_reserve)
         return -2;
 
-    if (mprotect((void *)(top - (intptr_t)new_committed),
-                 new_committed, PROT_READ | PROT_WRITE) < 0)
+    /* mprotect only the newly committed tail: the pages already
+     * committed (or warm from a previous life of this arena slot)
+     * keep their RW mapping, so reuse stays a cheap same-prot call. */
+    void *new_start = (void *)(top - (intptr_t)new_committed);
+    void *old_start = (void *)(top - (intptr_t)g->stack_committed);
+    if (mprotect(new_start, (size_t)((char *)old_start - (char *)new_start),
+                 PROT_READ | PROT_WRITE) < 0)
         return -1;
 
     g->stack_committed = new_committed;
