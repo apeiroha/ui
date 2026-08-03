@@ -461,15 +461,18 @@ ui_schedule(void)
     v->current = NULL;
 
     /* Single lock region: re-insert READY goroutine + pick next.
-     * Only re-insert if the goro yielded VOLUNTARILY.  A goro that parked
-     * (state=WAITING) and was woken by another vCPU before its switch
-     * (state now READY) must NOT be re-inserted here — the waker's
-     * standbyq/runq entry is the only delivery path.  Re-inserting would
-     * double-reference the goro (runq + standbyq), and if it then dies,
-     * a stale standbyq drain would resurrect the recycled goro. */
+     * Any goroutine that is READY when it yields must be re-inserted:
+     * both voluntary yields (ui_Yield) and io_uring/completion wakes
+     * that raced the switch need the runq entry.  Double insertion is
+     * prevented by the g->prev guard in ui_runq_insert_locked, so the
+     * unconditional re-insert is safe.
+     * (fcc4739's voluntary-only re-insert dropped a woken goroutine
+     * whose waker's runq insert was skipped/raced — the goro then sat
+     * READY in a runq whose vCPU slept in ppoll forever: UDP workers
+     * stalled with the receive queue pinned full.) */
     pthread_spin_lock(&v->runq_lock);
 
-    if (cg && cg->state == UI_READY && cg->voluntary)
+    if (cg && cg->state == UI_READY)
     {
         ui_runq_insert_locked(v, cg);
         cg->voluntary = 0;
