@@ -582,7 +582,11 @@ ui_sigsegv_handler(int sig, siginfo_t *info, void *ctx)
         intptr_t base = (intptr_t)v->current->stack_base;
         intptr_t top = base + (intptr_t)v->current->stack_reserve;
         intptr_t fault = (intptr_t)info->si_addr;
-        if (fault >= base && fault < top)
+        /* Include the slot's guard page (one page below base): a stack
+         * overflow lands there when the committed region has reached
+         * the reserve.  ui_stack_grow decides -2 (overflow, report)
+         * vs -1 (not stack usage, re-raise). */
+        if (fault >= base - (intptr_t)v->current->page_size && fault < top)
         {
             int ret = ui_stack_grow(v->current, info->si_addr);
             if (ret == 0) return;

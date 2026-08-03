@@ -12,6 +12,7 @@ struct ui_StackArena
 {
     void *base;
     size_t reserve;
+    size_t stride;  /* reserve + page_size: per-slot stride incl. guard page */
     int slots;
     uint64_t free_mask;
     uint64_t rw_mask;   /* slots whose commit region is already RW */
@@ -56,7 +57,12 @@ ui_stack_init_arena(ui_Goro *g, size_t reserve, size_t commit, int page_size)
     }
     if (!arena)
     {
-        size_t map_size = reserve * UI_STACK_ARENA_SLOTS;
+        /* Each slot is reserve + one guard page: the guard page sits at
+         * the slot's bottom and stays PROT_NONE forever, so a stack
+         * overflow past the reserve faults on the guard instead of
+         * silently walking into the adjacent slot's committed region. */
+        size_t stride = reserve + (size_t)page_size;
+        size_t map_size = stride * UI_STACK_ARENA_SLOTS;
         void *base = mmap(NULL, map_size, PROT_NONE,
                           MAP_PRIVATE | MAP_ANON | MAP_STACK, -1, 0);
         if (base != MAP_FAILED)
@@ -66,6 +72,7 @@ ui_stack_init_arena(ui_Goro *g, size_t reserve, size_t commit, int page_size)
             {
                 arena->base = base;
                 arena->reserve = reserve;
+                arena->stride = stride;
                 arena->slots = UI_STACK_ARENA_SLOTS;
                 arena->free_mask = UINT64_MAX;
                 arena->next = g_ui_sched.stack_arenas;
@@ -87,7 +94,10 @@ ui_stack_init_arena(ui_Goro *g, size_t reserve, size_t commit, int page_size)
     if (!arena || slot < 0)
         return -1;
 
-    void *base = (char *)arena->base + (size_t)slot * reserve;
+    /* Slot layout: [slot_start, slot_start + page_size) = PROT_NONE
+     * guard page, [slot_start + page_size, +stride) = the stack. */
+    void *base = (char *)arena->base + (size_t)slot * arena->stride
+               + (size_t)page_size;
     void *commit_start = (char *)base + reserve - commit;
     /* Skip the mprotect when the slot is already RW (reused after a
      * destroy that kept the pages warm): the NONE→RW round trip is a
@@ -173,7 +183,7 @@ ui_stack_arenas_destroy(void)
     while (arena)
     {
         ui_StackArena *next = arena->next;
-        munmap(arena->base, arena->reserve * (size_t)arena->slots);
+        munmap(arena->base, arena->stride * (size_t)arena->slots);
         free(arena);
         arena = next;
     }
