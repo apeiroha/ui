@@ -33,6 +33,10 @@ void     ui_Yield(void);
 void     ui_Sleep(unsigned int ms);
 void     ui_SleepUs(unsigned int us);
 
+/* Rebind the current goro to an explicit home vCPU (soft binding, same
+ * semantics as GoOn — takes effect from the next blocking point). */
+void     ui_PinTo(int vcpu);
+
 uint64_t ui_NewChan(size_t elem_size, unsigned int buf_cap);
 void     ui_ChanSend(uint64_t c, const void *val);
 void     ui_ChanRecv(uint64_t c, void *val);

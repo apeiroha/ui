@@ -22,6 +22,7 @@ extern func NVCPUs() int
 extern func Yield()
 extern func Sleep(ms uint32)
 extern func SleepUs(us uint32)
+extern func PinTo(vcpu int)
 
 // ── Channel ops (used internally by compiler's chan codegen) ──
 extern func NewChan(elem_size uint, buf_cap uint32) uint64

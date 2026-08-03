@@ -944,6 +944,21 @@ ui_Yield(void)
     ui_switch(&v->current->rsp, v->sched_rsp);
 }
 
+/* Rebind the CURRENT goro to an explicit home vCPU (soft binding, same
+ * semantics as GoOn): the goro finishes its current quantum on this vCPU
+ * and, from its NEXT blocking point on, is woken/resumed on the new home
+ * (chan/sync/select/io_uring wakeups route via home_vcpu; ui_Sleep stays
+ * on the vCPU that submitted it — per-vCPU sleepq).  Work stealing may
+ * still migrate the goro afterwards.  Out-of-range vcpu clamps to 0. */
+void
+ui_PinTo(int vcpu)
+{
+    ui_vCPU *v = ui_get_vcpu();
+    if (!v || !v->current) return;
+    if (vcpu < 0 || vcpu >= g_ui_sched.nvcpus) vcpu = 0;
+    v->current->home_vcpu = vcpu;
+}
+
 void
 ui_Sleep(unsigned int ms)
 {
