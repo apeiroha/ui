@@ -19,6 +19,16 @@ uint64_t ui_GoSized(ui_Func0 f, int stack_size);
 uint64_t ui_Go1(void *fn, uintptr_t arg);
 uint64_t ui_Go1Sized(void *fn, uintptr_t arg, int stack_size);
 
+/* Targeted spawn: place the goro on an explicit home vCPU (soft binding —
+ * the goro resumes there after blocking ops; stealing may still migrate
+ * it).  Out-of-range vcpu clamps to 0. */
+uint64_t ui_GoOn(ui_Func0 f, int vcpu);
+uint64_t ui_GoOnSized(ui_Func0 f, int stack_size, int vcpu);
+uint64_t ui_Go1On(void *fn, uintptr_t arg, int vcpu);
+uint64_t ui_Go1OnSized(void *fn, uintptr_t arg, int stack_size, int vcpu);
+
+int      ui_NVCPUs(void);
+
 void     ui_Yield(void);
 void     ui_Sleep(unsigned int ms);
 void     ui_SleepUs(unsigned int us);

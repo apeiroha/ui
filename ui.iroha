@@ -11,6 +11,13 @@ extern func GoSized(f uintptr, stack_size int) uint64
 extern func Go1(fn uintptr, arg uintptr) uint64
 extern func Go1Sized(fn uintptr, arg uintptr, stack_size int) uint64
 
+// ── Targeted spawn: run on an explicit home vCPU (soft binding) ──
+extern func GoOn(f uintptr, vcpu int) uint64
+extern func GoOnSized(f uintptr, stack_size int, vcpu int) uint64
+extern func Go1On(fn uintptr, arg uintptr, vcpu int) uint64
+extern func Go1OnSized(fn uintptr, arg uintptr, stack_size int, vcpu int) uint64
+extern func NVCPUs() int
+
 // ── Yield / Sleep ──
 extern func Yield()
 extern func Sleep(ms uint32)

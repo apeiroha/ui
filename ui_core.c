@@ -814,6 +814,22 @@ ui_goro_exit(void)
     ui_switch(&v->current->rsp, v->sched_rsp);
 }
 
+/* Enqueue a spawned goro on an explicit target vCPU (soft binding:
+ * home_vcpu decides the initial runq placement and the wakeup/resume
+ * point for every blocking path; work stealing may still migrate the
+ * goro when the target goes idle, rewriting home_vcpu accordingly).
+ * Out-of-range targets (including before ui_Init) clamp to vCPU 0. */
+static void
+ui_spawn_enqueue_at(ui_Goro *g, int target)
+{
+    if (target < 0 || target >= g_ui_sched.nvcpus)
+        target = 0;
+
+    g->home_vcpu = target;
+    atomic_fetch_add(&g_ui_sched.active_count, 1);
+    ui_runq_insert(&g_ui_sched.vcpus[target], g);
+}
+
 static void
 ui_spawn_enqueue(ui_Goro *g)
 {
@@ -833,9 +849,7 @@ ui_spawn_enqueue(ui_Goro *g)
     else
         target = 0;
 
-    g->home_vcpu = target;
-    atomic_fetch_add(&g_ui_sched.active_count, 1);
-    ui_runq_insert(&g_ui_sched.vcpus[target], g);
+    ui_spawn_enqueue_at(g, target);
     if (cur && cur->current && g_ui_sched.nvcpus > 1)
     {
         int peer = (target + 1) % g_ui_sched.nvcpus;
@@ -879,6 +893,45 @@ ui_Go1Sized(void *fn, uintptr_t arg, int stack_size)
     if (!g) { free(p); return 0; }
     ui_spawn_enqueue(g);
     return (uint64_t)(uintptr_t)g;
+}
+
+/* ── Targeted spawn (GoOn) ──
+ * Spawn on an explicit home vCPU: the goro is placed on that vCPU's runq
+ * and resumes there after every blocking op (soft binding — a steal may
+ * still migrate it, see ui_spawn_enqueue_at).  Out-of-range vcpu clamps
+ * to 0. */
+
+uint64_t ui_GoOn(ui_Func0 f, int vcpu) { return ui_GoOnSized(f, 0, vcpu); }
+
+uint64_t
+ui_GoOnSized(ui_Func0 f, int stack_size, int vcpu)
+{
+    ui_Goro *g = ui_goro_alloc(f, NULL, stack_size);
+    if (!g) return 0;
+    ui_spawn_enqueue_at(g, vcpu);
+    ui_wake_vcpu(&g_ui_sched.vcpus[g->home_vcpu]);
+    return (uint64_t)(uintptr_t)g;
+}
+
+uint64_t ui_Go1On(void *fn, uintptr_t arg, int vcpu) { return ui_Go1OnSized(fn, arg, 0, vcpu); }
+
+uint64_t
+ui_Go1OnSized(void *fn, uintptr_t arg, int stack_size, int vcpu)
+{
+    struct go1_pkg *p = malloc(sizeof(*p));
+    if (!p) return 0;
+    p->fn = fn; p->arg = arg;
+    ui_Goro *g = ui_goro_alloc((ui_Func0)go1_trampoline, p, stack_size);
+    if (!g) { free(p); return 0; }
+    ui_spawn_enqueue_at(g, vcpu);
+    ui_wake_vcpu(&g_ui_sched.vcpus[g->home_vcpu]);
+    return (uint64_t)(uintptr_t)g;
+}
+
+int
+ui_NVCPUs(void)
+{
+    return g_ui_sched.nvcpus;
 }
 
 void
