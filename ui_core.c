@@ -376,8 +376,12 @@ ui_goro_recycle(ui_Goro *cg)
     /* 1. Try per-vCPU pool (no lock) */
     if (v && v->goro_pool_count < UI_LOCAL_GORO_POOL_SIZE)
     {
-        if (g_ui_sched.release_stacks_on_recycle)
-            ui_stack_madvise_dontneed(cg);
+        /* Always release the stack's physical pages to the kernel on
+         * recycle (not just under the env knob): pooled goroutines keep
+         * their stacks for reuse, but retaining committed pages makes
+         * RSS grow linearly with spawn count and eventually OOMs
+         * long-running servers.  Pages fault back in on next use. */
+        ui_stack_madvise_dontneed(cg);
         void *sb = cg->stack_base;
         size_t sr = cg->stack_reserve;
         size_t sc = cg->stack_committed;
@@ -404,8 +408,12 @@ ui_goro_recycle(ui_Goro *cg)
     pthread_mutex_lock(&g_ui_sched.goro_pool_lock);
     if (g_ui_sched.goro_pool_count < UI_GORO_POOL_SIZE)
     {
-        if (g_ui_sched.release_stacks_on_recycle)
-            ui_stack_madvise_dontneed(cg);
+        /* Always release the stack's physical pages to the kernel on
+         * recycle (not just under the env knob): pooled goroutines keep
+         * their stacks for reuse, but retaining committed pages makes
+         * RSS grow linearly with spawn count and eventually OOMs
+         * long-running servers.  Pages fault back in on next use. */
+        ui_stack_madvise_dontneed(cg);
         void *sb = cg->stack_base;
         size_t sr = cg->stack_reserve;
         size_t sc = cg->stack_committed;
