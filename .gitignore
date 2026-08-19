@@ -1,0 +1,16 @@
+# Build output
+build/
+
+# Generated C from the iroha compiler (.iroha → .iroha.c)
+*.iroha.c
+
+# Object files
+*.o
+
+# Perf/coverage profiling data
+*.profraw
+*.profdata
+*.gcda
+perf.data
+perf.data.old
+vgcore.*
