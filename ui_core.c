@@ -388,6 +388,18 @@ ui_goro_recycle(ui_Goro *cg)
         ui_StackArena *sa = cg->stack_arena;
         int    ss = cg->stack_slot;
         int    ps = cg->page_size;
+        uint64_t tok = cg->io_token;
+        /* 不变量：带在途 I/O 的 goro 禁止入池。若放行，陈旧 CQE 会在地址
+         * 复用且新住户再次置 io_pending 后命中（ABA），写入错误结果。
+         * 正常路径不可能到达此处——I/O 等待循环退出时 io_pending 必为 0。 */
+        if (cg->io_pending) {
+            fprintf(stderr,
+                    "\nFATAL: recycling goro %p with in-flight I/O "
+                    "(io_pending=%d io_token=%llu state=%d)\n",
+                    (void *)cg, cg->io_pending,
+                    (unsigned long long)tok, cg->state);
+            _exit(1);
+        }
         memset(cg, 0, sizeof(ui_Goro));
         cg->stack_base = sb;
         cg->stack_reserve = sr;
@@ -396,6 +408,7 @@ ui_goro_recycle(ui_Goro *cg)
         cg->stack_slot = ss;
         cg->page_size = ps;
         cg->sleepq_idx = -1;
+        cg->io_token = tok + 1;   /* 代际 +1：新世可被日志区分 */
         cg->state = UI_DEAD;   /* pooled goros must never look READY to stale wakes */
         v->goro_pool[v->goro_pool_count] = cg;
         v->goro_pool_count++;
@@ -420,6 +433,16 @@ ui_goro_recycle(ui_Goro *cg)
         ui_StackArena *sa = cg->stack_arena;
         int    ss = cg->stack_slot;
         int    ps = cg->page_size;
+        uint64_t tok = cg->io_token;
+        /* 同上：带在途 I/O 的 goro 禁止入池（ABA 防护） */
+        if (cg->io_pending) {
+            fprintf(stderr,
+                    "\nFATAL: recycling goro %p with in-flight I/O "
+                    "(io_pending=%d io_token=%llu state=%d)\n",
+                    (void *)cg, cg->io_pending,
+                    (unsigned long long)tok, cg->state);
+            _exit(1);
+        }
         memset(cg, 0, sizeof(ui_Goro));
         cg->stack_base = sb;
         cg->stack_reserve = sr;
@@ -428,6 +451,7 @@ ui_goro_recycle(ui_Goro *cg)
         cg->stack_slot = ss;
         cg->page_size = ps;
         cg->sleepq_idx = -1;
+        cg->io_token = tok + 1;   /* 代际 +1 */
         cg->state = UI_DEAD;   /* pooled goros must never look READY to stale wakes */
         g_ui_sched.goro_pool[g_ui_sched.goro_pool_count] = cg;
         g_ui_sched.goro_pool_count++;

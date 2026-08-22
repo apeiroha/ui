@@ -137,7 +137,8 @@ struct ui_Goro
     void     *chan_recv_ptr;  /* dest buffer for recv handoff */
     const void *chan_send_ptr;/* src data for send handoff */
     int       chan_handoff;   /* 1 = direct handoff completed */
-    uint64_t  io_token;
+    uint64_t  io_token;  /* 代际令牌：每次 I/O 提交自增，跨 goro 复用不清零；
+                              同一地址的第 N 世与第 N+1 世 I/O 世代可区分 */
     ssize_t   io_result;
     int       io_pending;  /* non-zero while an io_uring op is in flight */
 };
@@ -283,12 +284,14 @@ void          ui_waitq_wake_one(ui_WaitQ *q);
 void          ui_waitq_wake_all(ui_WaitQ *q);
 int           ui_waitq_count(ui_WaitQ *q);
 
-/* ── Batch recv — struct stored on caller's stack ── */
+/* ── Batch recv — 堆分配；drain 收割完该批全部 CQE 后释放。
+ * 不能放调用者栈上：残留 CQE（数据或 ECANCELED）可能在函数返回后
+ * 才到达，届时栈帧已死，drain 解引用 &batch 即 use-after-scope。 ── */
 struct ui_RecvBatch {
     ui_Goro  *goro;
     int       count;   /* atomic: completions seen */
     int       active;  /* 1 while caller is still waiting */
-    int       pad;
+    unsigned  total;   /* 该批提交的 op 总数；count 达到 total 后可安全 free */
 };
 
 #endif

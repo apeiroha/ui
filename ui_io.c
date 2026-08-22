@@ -397,7 +397,12 @@ ui_uring_drain(ui_vCPU *v)
             /* ── Batch recv completion ── */
             struct ui_RecvBatch *b = (struct ui_RecvBatch *)(uintptr_t)(cqe->user_data & ~3ULL);
             if (!b->active)
+            {
+                /* 调用者已返回：收割到该批最后一个 CQE 后才能释放 */
+                if ((unsigned)b->count >= b->total)
+                    free(b);
                 goto skip;
+            }
             __sync_fetch_and_add(&b->count, 1);
             if (b->count == 1)
             {
@@ -481,7 +486,7 @@ ui_io_submit_and_wait(ui_vCPU *v, struct io_uring_sqe *sqe)
     cur->io_pending = 1;
     ui_uring_submit(v);
 
-    cur->io_token = (uint64_t)(uintptr_t)cur;
+    cur->io_token++;  /* 接线代际令牌：新 I/O 世代（原为自指指针，从未被读取） */
 
     /* Drain any immediate completion BEFORE setting state to WAITING.
      * If the I/O completed instantly (within the io_uring_enter syscall),
@@ -915,7 +920,7 @@ ui_SendMMsg(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags)
     cur->io_pending = 1;
     ui_uring_submit_batch(v, vlen);
 
-    cur->io_token = (uint64_t)(uintptr_t)cur;
+    cur->io_token++;  /* 接线代际令牌：新 I/O 世代（原为自指指针，从未被读取） */
     ui_uring_drain(v);
     if (!cur->io_pending)
         return (int)cur->io_result;
@@ -986,7 +991,7 @@ ui_RecvMMsg(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags)
     cur->io_pending = 1;
     ui_uring_submit_batch(v, vlen);
 
-    cur->io_token = (uint64_t)(uintptr_t)cur;
+    cur->io_token++;  /* 接线代际令牌：新 I/O 世代（原为自指指针，从未被读取） */
     ui_uring_drain(v);
     if (!cur->io_pending)
         return (int)cur->io_result;
@@ -1037,10 +1042,14 @@ ui_RecvBatch(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags)
     unsigned tail = *v->sq_tail;
     unsigned mask = *v->sq_ring_mask;
 
-    struct ui_RecvBatch batch;
-    batch.goro = cur;
-    batch.count = 0;
-    batch.active = 1;
+    /* 堆分配：返回后残留 CQE（数据或 ECANCELED）仍带 &b|2 标签，
+     * 由 drain 在收割完该批全部 CQE 后释放（见 user_data&2 分支）。
+     * 放栈上则返回后即悬垂——use-after-scope / 错误唤醒。 */
+    struct ui_RecvBatch *b = calloc(1, sizeof(*b));
+    if (!b) return -1;
+    b->goro = cur;
+    b->active = 1;
+    b->total = vlen;
 
     for (unsigned i = 0; i < vlen; i++) {
         struct io_uring_sqe *sqe = &v->sq_sqes[(tail + i) & mask];
@@ -1050,40 +1059,51 @@ ui_RecvBatch(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags)
         sqe->addr = (unsigned long)(uintptr_t)&msgvec[i].msg_hdr;
         sqe->len = 1;
         sqe->msg_flags = (unsigned)flags;
-        sqe->user_data = (uint64_t)(uintptr_t)&batch | 2;
+        sqe->user_data = (uint64_t)(uintptr_t)b | 2;
     }
 
     cur->io_pending = 1;
     ui_uring_submit_batch(v, vlen);
 
-    cur->io_token = (uint64_t)(uintptr_t)cur;
+    cur->io_token++;  /* 接线代际令牌：新 I/O 世代（原为自指指针，从未被读取） */
     ui_uring_drain(v);
-    if (batch.count == 0) {
+    if (b->count == 0) {
         cur->state = UI_WAITING;
-        while (batch.count == 0 && cur->io_pending) {
+        while (b->count == 0 && cur->io_pending) {
             cur->state = UI_WAITING;
             ui_switch(&cur->rsp, v->sched_rsp);
             ui_uring_drain(v);
         }
     }
 
-    /* Cancel remaining pending operations */
-    if (vlen > (unsigned)batch.count) {
+    cur->io_pending = 0;  /* 批量完成走 &b|2 分支，从不清此标志——必须显式清除，
+                               否则 goro 带着在途标志退出、入池后成为 CQE ABA 种子 */
+
+    /* Cancel remaining pending operations（尽力而为，不等待其完成）。
+     * 取消请求以 user_data=0 提交，其 CQE 走 user_data==0 分支，
+     * 因此绝不置 io_pending（置了永远无人清除）。
+     * CANCEL_FD|CANCEL_ALL：按 fd 匹配并取消该 ring 上全部在途 RECVMSG；
+     * 每个被取消的 op 会以原 user_data 投递 ECANCELED CQE，供计数与释放。 */
+    if (vlen > (unsigned)b->count) {
+        /* 先腾出 SQE 槽位 */
+        ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
+        ui_uring_drain(v);
         struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
         if (sqe) {
             memset(sqe, 0, sizeof(*sqe));
             sqe->opcode = IORING_OP_ASYNC_CANCEL;
             sqe->fd = fd;
             sqe->off = IORING_ASYNC_CANCEL_FD |
-                       IORING_ASYNC_CANCEL_ALL |
-                       IORING_ASYNC_CANCEL_OP;
-            sqe->addr = IORING_OP_RECVMSG;
+                       IORING_ASYNC_CANCEL_ALL;
             sqe->user_data = 0;
-            cur->io_pending = 1;
             ui_uring_submit(v);
         }
     }
 
-    batch.active = 0;
-    return batch.count;
+    /* 不等残留 CQE：内存归 drain 兜底释放，本调用立即返回首个结果 */
+    b->active = 0;
+    int got = b->count;
+    if ((unsigned)got >= b->total)
+        free(b);   /* 该批已全部收割，无后续 tagged CQE，就地释放 */
+    return got;
 }
