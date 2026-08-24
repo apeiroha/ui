@@ -141,6 +141,14 @@ $(BUILD_DIR)/test_sched_iopark: $(TEST_IOPARK_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_D
 test-sched-iopark: $(BUILD_DIR)/test_sched_iopark
 	./$(BUILD_DIR)/test_sched_iopark
 
+TEST_SPAWN_STEAL_SRC = tests/test_spawn_steal.c
+
+$(BUILD_DIR)/test_spawn_steal: $(TEST_SPAWN_STEAL_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
+	$(CC) $(UI_CFLAGS) -I. -o $@ $^ $(LDFLAGS) $(_LIB)
+
+test-spawn-steal: $(BUILD_DIR)/test_spawn_steal
+	./$(BUILD_DIR)/test_spawn_steal
+
 $(BUILD_DIR)/test_stack_overflow: $(TEST_OVERFLOW_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
 	$(CC) $(UI_CFLAGS) -I. -o $@ $^ $(LDFLAGS) $(_LIB)
 

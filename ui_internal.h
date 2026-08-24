@@ -119,6 +119,8 @@ struct ui_Goro
     int       voluntary;   /* 1 = last yield was a voluntary ui_Yield */
     int       home_vcpu;
     int       first_run;
+    int       pinned;      /* 1 = GoOn-placed: not stealable until it has
+                              * run once on its requested vCPU */
     int       sleepq_idx;  /* index in sleepq heap, -1 if not in sleepq */
     /* Intrusive circular linked list (runq) */
     ui_Goro  *prev;

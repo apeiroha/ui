@@ -313,30 +313,50 @@ ui_steal_work(ui_vCPU *v)
         int count = atomic_load(&vic->runq_count);
 
         bool ok = false;
-        if (count > 2)
+        /* Stealability must hold for ANY nonzero runq depth: a lone spawned
+         * goro behind a busy spawner would otherwise never migrate (the
+         * spawner holds its vCPU until it blocks — no preemption) and idle
+         * peers would spin forever without picking it up.  Go's runqgrab
+         * takes n - n/2 (a single g IS stealable); Tokio hit the identical
+         * pathology with a non-stealable slot and fixed it by making it
+         * stealable (#4941). */
+        if (count >= 1)
         {
-            int steal_n = count / 2;
+            int want = count > 1 ? count / 2 : 1;
             ui_Goro *batch_end = s->prev;
-            ui_Goro *batch_start = batch_end;
-            for (int i = 1; i < steal_n; i++)
-                batch_start = batch_start->prev;
-
-            batch_start->prev->next = s;
-            s->prev = batch_start->prev;
-            atomic_fetch_sub(&vic->runq_count, steal_n);
-
-            ui_Goro *steal = batch_start;
-            for (;;)
+            /* GoOn-pinned goros are exempt from stealing until they have
+             * run once on their requested vCPU: the batch is trimmed to
+             * the contiguous newest run of unpinned candidates, so a
+             * pinned goro deeper in the queue shields itself and anything
+             * older.  If even the newest candidate is pinned, skip. */
+            if (!batch_end->pinned)
             {
-                ui_Goro *next = steal->next;
-                steal->next = NULL;
-                steal->prev = NULL;
-                steal->home_vcpu = v->id;
-                ui_runq_insert_locked(v, steal);
-                if (steal == batch_end) break;
-                steal = next;
+                ui_Goro *batch_start = batch_end;
+                int taken = 1;
+                while (taken < want && batch_start->prev != s &&
+                       !batch_start->prev->pinned)
+                {
+                    batch_start = batch_start->prev;
+                    taken++;
+                }
+
+                batch_start->prev->next = s;
+                s->prev = batch_start->prev;
+                atomic_fetch_sub(&vic->runq_count, taken);
+
+                ui_Goro *steal = batch_start;
+                for (;;)
+                {
+                    ui_Goro *next = steal->next;
+                    steal->next = NULL;
+                    steal->prev = NULL;
+                    steal->home_vcpu = v->id;
+                    ui_runq_insert_locked(v, steal);
+                    if (steal == batch_end) break;
+                    steal = next;
+                }
+                ok = 1;
             }
-            ok = 1;
         }
 
         pthread_spin_unlock(&v->runq_lock);
@@ -580,6 +600,9 @@ ui_schedule(void)
         v->current = g;
         if (g->first_run)
         {
+            /* A GoOn-pinned goro has now reached its requested vCPU;
+             * from here on it participates in stealing like any other. */
+            g->pinned = 0;
             g->first_run = 0;
             ui_first_switch(&v->sched_rsp, g->rsp);
         }
@@ -859,6 +882,7 @@ ui_goro_alloc(ui_Func0 entry, void *arg, int stack_size)
     g->chan_send_ptr = NULL;
     g->chan_handoff = 0;
 
+    g->pinned = 0;
     ui_goro_init(g);
     g->first_run = 1;
     return g;
@@ -967,6 +991,7 @@ ui_GoOnSized(ui_Func0 f, int stack_size, int vcpu)
 {
     ui_Goro *g = ui_goro_alloc(f, NULL, stack_size);
     if (!g) return 0;
+    g->pinned = 1;   /* honor first-run placement: not stealable yet */
     ui_spawn_enqueue_at(g, vcpu);
     ui_wake_vcpu(&g_ui_sched.vcpus[g->home_vcpu]);
     return (uint64_t)(uintptr_t)g;
@@ -982,6 +1007,7 @@ ui_Go1OnSized(void *fn, uintptr_t arg, int stack_size, int vcpu)
     p->fn = fn; p->arg = arg;
     ui_Goro *g = ui_goro_alloc((ui_Func0)go1_trampoline, p, stack_size);
     if (!g) { free(p); return 0; }
+    g->pinned = 1;   /* honor first-run placement: not stealable yet */
     ui_spawn_enqueue_at(g, vcpu);
     ui_wake_vcpu(&g_ui_sched.vcpus[g->home_vcpu]);
     return (uint64_t)(uintptr_t)g;
