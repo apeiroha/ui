@@ -360,8 +360,64 @@ ui_steal_work(ui_vCPU *v)
         }
 
         pthread_spin_unlock(&v->runq_lock);
+        if (ok)
+        {
+            pthread_spin_unlock(&vic->runq_lock);
+            return 1;
+        }
+
+        /* Last resort: steal the victim's LIFO slot.  Mandatory for the
+         * lone-spawn starvation fix — a freshly spawned goro now lands
+         * in its spawner's slot, and with no preemption an idle peer
+         * must be able to take it when the spawner never yields.  Like
+         * Go (runqgrab stealRunNextG on the final findRunnable pass),
+         * this is only attempted on the last attempt; and when the
+         * victim is actively running a goro we pause-spin ~3us first —
+         * sync chan ops take ~50ns, so the backoff gives the pair a
+         * ~50x window to finish their handoff locally instead of being
+         * thrashed across cores. */
+        if (attempt != g_ui_sched.nvcpus * 2 - 1 || !vic->runnext ||
+            vic->runnext->pinned)
+        {
+            pthread_spin_unlock(&vic->runq_lock);
+            continue;
+        }
+
+        /* Backoff OUTSIDE both runq locks: spinning while holding the
+         * victim's lock would stall exactly the handoff we are waiting
+         * out.  State may change during the spin — everything is
+         * revalidated after re-locking. */
+        {
+            ui_vCPU *vc = vic;
+            int cur_running = vc->current &&
+                vc->current->state == UI_RUNNING;
+            pthread_spin_unlock(&vic->runq_lock);
+            if (cur_running)
+                for (int k = 0; k < UI_RUNNEXT_BACKOFF_ITERS; k++)
+                    __builtin_ia32_pause();
+        }
+
+        pthread_spin_lock(&vic->runq_lock);
+        pthread_spin_lock(&v->runq_lock);
+
+        ui_Goro *rn = vic->runnext;
+        if (!ui_runq_empty(v) || !rn || rn->pinned)
+        {
+            pthread_spin_unlock(&v->runq_lock);
+            pthread_spin_unlock(&vic->runq_lock);
+            if (!ui_runq_empty(v)) return 0;
+            continue;
+        }
+
+        vic->runnext = NULL;
+        rn->next = NULL;
+        rn->prev = NULL;
+        rn->home_vcpu = v->id;
+        ui_runq_insert_locked(v, rn);
+
+        pthread_spin_unlock(&v->runq_lock);
         pthread_spin_unlock(&vic->runq_lock);
-        if (ok) return 1;
+        return 1;
     }
     return 0;
 }
@@ -550,7 +606,30 @@ ui_schedule(void)
         cg->voluntary = 0;
     }
 
-    while ((g = v->runq_sentinel.next) != &v->runq_sentinel)
+    /* LIFO slot first (Go runnext / Tokio lifo_slot).  Anti-monopoly
+     * cap: after UI_RUNNEXT_MAX_POLLS consecutive slot schedules, the
+     * occupant is demoted to the FIFO tail and the counter resets —
+     * ui has no sysmon preemption, so this is the fairness guard that
+     * lets queued work interleave with a hot communicate-then-run pair. */
+    if (v->runnext)
+    {
+        if (v->runnext_polls < UI_RUNNEXT_MAX_POLLS)
+        {
+            g = v->runnext;
+            v->runnext = NULL;
+            v->runnext_polls++;
+        }
+        else
+        {
+            ui_runq_insert_locked(v, v->runnext);
+            v->runnext = NULL;
+            v->runnext_polls = 0;
+        }
+    }
+    else
+        v->runnext_polls = 0;
+
+    while (!g && (g = v->runq_sentinel.next) != &v->runq_sentinel)
     {
         if (!g->prev || !g->next)
         {
@@ -913,6 +992,25 @@ ui_spawn_enqueue_at(ui_Goro *g, int target)
     ui_runq_insert(&g_ui_sched.vcpus[target], g);
 }
 
+/* Place g into the vCPU's LIFO slot (Go runnext analog).  The previous
+ * occupant is kicked to the FIFO tail — the newest readied goro runs
+ * first, preserving "communicate-then-run" locality.  Slot mutations
+ * take runq_lock; between unlocking and re-inserting `old` there is a
+ * nanosecond window where it is reachable from no queue: harmless, it
+ * is READY and merely delayed. */
+static void
+ui_runnext_put(ui_vCPU *v, ui_Goro *g)
+{
+    ui_Goro *old = NULL;
+    pthread_spin_lock(&v->runq_lock);
+    old = v->runnext;
+    v->runnext = g;
+    pthread_spin_unlock(&v->runq_lock);
+
+    if (old)
+        ui_runq_insert(v, old);
+}
+
 static void
 ui_spawn_enqueue(ui_Goro *g)
 {
@@ -932,7 +1030,17 @@ ui_spawn_enqueue(ui_Goro *g)
     else
         target = 0;
 
-    ui_spawn_enqueue_at(g, target);
+    /* Same-vCPU spawn from a running goro feeds the LIFO slot instead
+     * of the FIFO tail (newproc -> runqput(next=true) in Go). */
+    if (cur && cur->current && target == cur->id && !g->pinned)
+    {
+        g->home_vcpu = target;
+        atomic_fetch_add(&g_ui_sched.active_count, 1);
+        ui_runnext_put(cur, g);
+    }
+    else
+        ui_spawn_enqueue_at(g, target);
+
     if (cur && cur->current && g_ui_sched.nvcpus > 1)
     {
         int peer = (target + 1) % g_ui_sched.nvcpus;
@@ -1094,13 +1202,50 @@ ui_wakeup(ui_Goro *g)
     {
         if (g->sleepq_idx >= 0)
             ui_sleepq_remove(v_target, g);
-        ui_runq_insert(v_target, g);
+        /* Same-vCPU wakeup feeds the LIFO slot ("whoever woke me runs
+         * next"), unless the goro is pinned to its first placement. */
+        ui_vCPU *cur = ui_this_vcpu;
+        if (cur && cur->current && !g->pinned)
+            ui_runnext_put(cur, g);
+        else
+            ui_runq_insert(v_target, g);
     }
     else
     {
         ui_standbyq_push(v_target, g);
         ui_wake_vcpu(v_target);
     }
+}
+
+/* Wake a channel direct-handoff partner onto the WAKER's LIFO slot.
+ * This is the re-convergence step that keeps a ping-pong pair glued to
+ * one vCPU: even if the pair was split earlier by stealing, every
+ * completed handoff pulls the partner back to the waker's core
+ * (Go: goready -> ready(gp, next=true) -> runqput(next=true)).
+ *
+ * Rewrites home_vcpu to the waker's vCPU — sanctioned soft-binding
+ * drift, identical to what work stealing does when it migrates a goro.
+ * Pinned goros keep their targeted placement and fall back to normal
+ * routing.  Locking note: callers hold their channel spinlock; nesting
+ * ch-lock -> runq_lock already exists via plain ui_wakeup and no code
+ * path takes them in reverse order. */
+void
+ui_wakeup_handoff(ui_Goro *g)
+{
+    if (!g) return;
+    if (!__sync_bool_compare_and_swap(&g->state, UI_WAITING, UI_READY))
+        return;
+
+    ui_vCPU *cur = ui_this_vcpu;
+    if (!cur || !cur->current || g->pinned ||
+        cur->id >= g_ui_sched.nvcpus)
+    {
+        ui_wakeup(g);
+        return;
+    }
+
+    g->home_vcpu = cur->id;
+    ui_runnext_put(cur, g);
 }
 
 void

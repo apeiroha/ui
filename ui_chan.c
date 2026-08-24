@@ -84,7 +84,10 @@ ui_ChanSend(uint64_t ch, const void *val)
             if (n->g->chan_recv_ptr)
                 memcpy(n->g->chan_recv_ptr, val, c->elem_size);
             n->g->chan_handoff = 1;
-            ui_wakeup(n->g);
+            /* Hand the partner to OUR LIFO slot: this re-converges a
+             * ping-pong pair onto one vCPU after any stealing split
+             * (Go goready(next=true) analog). */
+            ui_wakeup_handoff(n->g);
             pthread_spin_unlock(&c->lock);
             return;
         }
@@ -139,7 +142,10 @@ ui_ChanRecv(uint64_t ch, void *val)
             if (send_data && val)
                 memcpy(val, send_data, c->elem_size);
             n->g->chan_handoff = 1;
-            ui_wakeup(n->g);
+            /* Hand the partner to OUR LIFO slot: this re-converges a
+             * ping-pong pair onto one vCPU after any stealing split
+             * (Go goready(next=true) analog). */
+            ui_wakeup_handoff(n->g);
             pthread_spin_unlock(&c->lock);
             return;
         }

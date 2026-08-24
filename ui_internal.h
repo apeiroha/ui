@@ -79,6 +79,13 @@ extern uint32_t ui_yield_io_mask;
  * Cuts the eventfd+ppoll round trip for wakes that arrive while the
  * vCPU is still on-CPU looking for work. */
 #define UI_IDLE_SPIN_ITERS        64
+/* LIFO slot: consecutive schedules served from runnext before the
+ * occupant is demoted to the FIFO tail once (Tokio PR #2349 analog —
+ * ui has no preemption, so the cap is the only anti-monopoly guard). */
+#define UI_RUNNEXT_MAX_POLLS      3
+/* Pause-spin iterations approximating Go's usleep(3) backoff before
+ * stealing a running vCPU's runnext (~50ns chan op x 50 overshoot). */
+#define UI_RUNNEXT_BACKOFF_ITERS  3000
 
 enum
 {
@@ -196,7 +203,14 @@ typedef struct
     ui_Goro         *standbyq_tail;
     pthread_spinlock_t standbyq_lock;
     uint32_t         io_count;   /* sequential I/O completions, for fair yield */
-} ui_vCPU;
+    /* LIFO slot (Go runnext / Tokio lifo_slot): the most recently
+     * readied goro on this vCPU.  Protected by runq_lock.  Consumed
+     * before the FIFO runq; stealable only as a last resort with a
+     * short backoff while the victim is actively running (mirrors
+     * Go's 3us usleep before stealing a running P's runnext). */
+    ui_Goro         *runnext;
+    int              runnext_polls;   /* consecutive schedules from slot */
+ } ui_vCPU;
 
 typedef struct
 {
@@ -235,6 +249,7 @@ extern void   ui_trampoline(void);
 void          ui_schedule(void);
 void          ui_vcpu_idle(ui_vCPU *v);
 void          ui_wakeup(ui_Goro *g);
+void          ui_wakeup_handoff(ui_Goro *g);
 void          ui_goro_exit(void);
 
 int           ui_stack_init(ui_Goro *g, int stack_size);
