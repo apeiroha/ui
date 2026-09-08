@@ -149,6 +149,14 @@ $(BUILD_DIR)/test_spawn_steal: $(TEST_SPAWN_STEAL_SRC) $(UI_SRC) $(UI_ASM) $(BUI
 test-spawn-steal: $(BUILD_DIR)/test_spawn_steal
 	./$(BUILD_DIR)/test_spawn_steal
 
+TEST_LIFO_SLOT_SRC = tests/test_lifo_slot.c
+
+$(BUILD_DIR)/test_lifo_slot: $(TEST_LIFO_SLOT_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
+	$(CC) $(UI_CFLAGS) -I. -o $@ $^ $(LDFLAGS) $(_LIB)
+
+test-lifo-slot: $(BUILD_DIR)/test_lifo_slot
+	./$(BUILD_DIR)/test_lifo_slot
+
 $(BUILD_DIR)/test_stack_overflow: $(TEST_OVERFLOW_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
 	$(CC) $(UI_CFLAGS) -I. -o $@ $^ $(LDFLAGS) $(_LIB)
 

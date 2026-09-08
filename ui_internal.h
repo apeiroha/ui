@@ -128,6 +128,12 @@ struct ui_Goro
     int       first_run;
     int       pinned;      /* 1 = GoOn-placed: not stealable until it has
                               * run once on its requested vCPU */
+    /* TEMP DEBUG (lifo investigation) */
+    int       dbg_slot_writer;
+    int       dbg_state_at_fill;
+    int       dbg_prev_voluntary;
+    int       dbg_d0v, dbg_d0k;
+    int       dbg_d1v, dbg_d1k;
     int       sleepq_idx;  /* index in sleepq heap, -1 if not in sleepq */
     /* Intrusive circular linked list (runq) */
     ui_Goro  *prev;
