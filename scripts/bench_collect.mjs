@@ -43,11 +43,17 @@ function collect(binDir, binary, iters, attempts) {
   for (let tries = 1; tries <= attempts && ok < iters; tries++) {
     let stdout;
     try {
-      stdout = execFileSync(path, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+      stdout = execFileSync(path, {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 180000,
+      });
     } catch (err) {
       // The runtime has a known intermittent scheduler race; a crashed run
       // yields no usable record, so retry rather than fail the whole job.
-      console.warn(`[warn] ${binary} attempt ${tries} failed (${err.status ?? err.message}); retrying`);
+      const where = String(err.stdout || "").trim().split("\n").filter(Boolean).pop() || "";
+      const how = err.signal ? `signal ${err.signal}` : `exit ${err.status}`;
+      console.warn(`[warn] ${binary} attempt ${tries} failed (${how})${where ? " last: " + where.trim() : ""}; retrying`);
       continue;
     }
     const parsed = parseMetrics(stdout);

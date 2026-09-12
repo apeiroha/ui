@@ -81,6 +81,7 @@ static void bench_io_fastpath(int N) {
 }
 
 int main(void) {
+    setvbuf(stdout, NULL, _IONBF, 0);
     printf("UI I/O benchmarks\n");
     printf("=================\n");
 

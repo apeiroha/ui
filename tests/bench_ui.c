@@ -366,6 +366,7 @@ static void bench_rwlock_write_multi(void) {
 /* ── Main ── */
 
 int main(void) {
+    setvbuf(stdout, NULL, _IONBF, 0);
     printf("=== UI (うい) Benchmarks ===\n");
     printf("  Platform: x86_64-linux-musl (clang, -O3, static)\n\n");
 
