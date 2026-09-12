@@ -189,6 +189,10 @@ endif
 bench-ui-io: $(BUILD_DIR)/bench_ui_io
 	./$(BUILD_DIR)/bench_ui_io
 
+# Collect a benchmark record as JSON (min of 3 runs per metric).
+bench-json: $(BUILD_DIR)/bench_ui $(BUILD_DIR)/bench_ui_io
+	node scripts/bench_collect.mjs --bin-dir $(BUILD_DIR) --iters 3 --out bench-output.json
+
 # ── Perf profiling ──
 .PHONY: bench-ui-perf
 bench-ui-perf:
@@ -198,7 +202,7 @@ bench-ui-perf:
 # ── Aggregate ──
 .PHONY: all test test-ui test-c8-race test-p0 test-p0-asan test-udp-echo \
         test-sched-iopark test-spawn-steal test-lifo-slot test-stack-overflow \
-        bench-ui bench-ui-io libui clean
+        bench-ui bench-ui-io bench-json libui clean
 
 test: test-ui test-c8-race test-p0 test-udp-echo test-sched-iopark \
        test-spawn-steal test-stack-overflow

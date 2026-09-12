@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ui (うい) — benchmark tracking</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --fg: #e6edf3;
+    --muted: #8b949e;
+    --good: #3fb950;
+    --bad: #f85149;
+    --accent: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    padding: 24px 28px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  h1 { margin: 0 0 4px; font-size: 20px; font-weight: 600; }
+  h1 a { color: var(--fg); text-decoration: none; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .meta a { color: var(--accent); }
+  main { padding: 20px 28px 60px; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
+  .tab {
+    background: var(--panel);
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 14px;
+    cursor: pointer;
+    font: inherit;
+  }
+  .tab.active { color: var(--fg); border-color: var(--accent); }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 16px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px 8px;
+  }
+  .card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .card-title { font-weight: 600; font-size: 13px; }
+  .card-value { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .card-value .num { font-size: 15px; font-weight: 600; }
+  .card-value .unit { color: var(--muted); font-size: 11px; }
+  .delta { font-size: 12px; margin-left: 8px; }
+  .delta.good { color: var(--good); }
+  .delta.bad { color: var(--bad); }
+  .delta.flat { color: var(--muted); }
+  .chart-wrap { position: relative; height: 150px; margin-top: 8px; }
+  #status { color: var(--muted); padding: 40px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1><a href="https://github.com/apeiroha/ui">ui (うい)</a> — benchmark tracking</h1>
+  <div class="meta" id="meta">loading…</div>
+</header>
+<main>
+  <div class="tabs" id="tabs"></div>
+  <div id="status">loading…</div>
+  <div class="grid" id="grid"></div>
+</main>
+<script>
+const state = { data: null, group: null, charts: [] };
+const PALETTE = ['#58a6ff', '#f0883e', '#3fb950', '#db61a2', '#a5d6ff', '#d29922', '#8b949e'];
+
+function fmtDate(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return iso;
+  return d.toLocaleString(undefined, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+function metricNames(runs) {
+  const seen = [];
+  for (const run of runs) {
+    const group = run.metrics && run.metrics[state.group];
+    if (!group) continue;
+    for (const name of Object.keys(group)) if (!seen.includes(name)) seen.push(name);
+  }
+  return seen;
+}
+
+function seriesFor(runs, metric) {
+  return runs.map(r => {
+    const g = r.metrics && r.metrics[state.group];
+    return g && typeof g[metric] === 'number' ? g[metric] : null;
+  });
+}
+
+function lastTwo(values) {
+  const present = [];
+  for (let i = 0; i < values.length; i++) if (values[i] !== null) present.push(values[i]);
+  if (present.length === 0) return [null, null];
+  return [present[present.length - 1], present.length > 1 ? present[present.length - 2] : null];
+}
+
+function renderMeta() {
+  const runs = state.data.runs || [];
+  const last = runs[runs.length - 1];
+  const el = document.getElementById('meta');
+  if (!last) { el.textContent = 'no runs yet'; return; }
+  const commit = last.commit_url
+    ? `<a href="${last.commit_url}">${last.short || last.commit.slice(0, 8)}</a>` : (last.short || '');
+  const runUrl = last.run_url ? ` · <a href="${last.run_url}">workflow run</a>` : '';
+  const env = last.env || {};
+  el.innerHTML = `${runs.length} run(s) · latest ${commit} @ ${fmtDate(last.date)}`
+    + ` · ${env.toolchain || '?'} / ${env.build || '?'} / ${env.nvcpus || '?'} vCPU / min of ${env.iters || '?'}${runUrl}`;
+}
+
+function renderTabs() {
+  const tabs = document.getElementById('tabs');
+  tabs.innerHTML = '';
+  const groups = state.groups;
+  for (const group of groups) {
+    const btn = document.createElement('button');
+    btn.className = 'tab' + (group === state.group ? ' active' : '');
+    btn.textContent = group;
+    btn.onclick = () => { state.group = group; renderAll(); };
+    tabs.appendChild(btn);
+  }
+}
+
+function renderCharts() {
+  for (const c of state.charts) c.destroy();
+  state.charts = [];
+
+  const grid = document.getElementById('grid');
+  grid.innerHTML = '';
+  const runs = state.data.runs || [];
+  const names = metricNames(runs);
+  const labels = runs.map(r => fmtDate(r.date));
+
+  names.forEach((metric, idx) => {
+    const values = seriesFor(runs, metric);
+    const [latest, prev] = lastTwo(values);
+
+    const card = document.createElement('div');
+    card.className = 'card';
+
+    const head = document.createElement('div');
+    head.className = 'card-head';
+    const title = document.createElement('div');
+    title.className = 'card-title';
+    title.textContent = metric;
+    const value = document.createElement('div');
+    value.className = 'card-value';
+    let deltaHtml = '';
+    if (latest !== null && prev !== null && prev !== 0) {
+      const pct = (latest - prev) / prev * 100;
+      const cls = Math.abs(pct) < 0.5 ? 'flat' : (pct < 0 ? 'good' : 'bad');
+      const sign = pct > 0 ? '+' : '';
+      deltaHtml = `<span class="delta ${cls}">${sign}${pct.toFixed(1)}%</span>`;
+    }
+    value.innerHTML = latest === null ? '—' :
+      `<span class="num">${latest.toLocaleString(undefined, { maximumFractionDigits: 1 })}</span> <span class="unit">ns/op</span>${deltaHtml}`;
+    head.appendChild(title);
+    head.appendChild(value);
+    card.appendChild(head);
+
+    const wrap = document.createElement('div');
+    wrap.className = 'chart-wrap';
+    const canvas = document.createElement('canvas');
+    wrap.appendChild(canvas);
+    card.appendChild(wrap);
+    grid.appendChild(card);
+
+    const color = PALETTE[idx % PALETTE.length];
+    const chart = new Chart(canvas, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          data: values,
+          borderColor: color,
+          backgroundColor: color + '22',
+          borderWidth: 2,
+          pointRadius: 2,
+          pointHoverRadius: 4,
+          tension: 0.25,
+          spanGaps: true,
+          fill: false,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: items => runs[items[0].dataIndex] ? fmtDate(runs[items[0].dataIndex].date) : '',
+              label: item => item.parsed.y === null ? 'n/a' : item.parsed.y.toLocaleString() + ' ns/op',
+              afterLabel: item => {
+                const r = runs[item.dataIndex] || {};
+                return [r.short || '', r.env ? (r.env.toolchain + ' / ' + r.env.build) : ''].filter(Boolean);
+              },
+            },
+          },
+        },
+        scales: {
+          x: { display: false },
+          y: {
+            beginAtZero: false,
+            ticks: { color: '#8b949e', maxTicksLimit: 4, callback: v => v >= 1000 ? (v / 1000) + 'k' : v },
+            grid: { color: '#21262d' },
+          },
+        },
+      },
+    });
+    state.charts.push(chart);
+  });
+
+  if (names.length === 0) {
+    document.getElementById('status').textContent = 'no metrics for this group';
+  } else {
+    document.getElementById('status').textContent = '';
+  }
+}
+
+function renderAll() {
+  renderMeta();
+  renderTabs();
+  renderCharts();
+}
+
+async function boot() {
+  try {
+    const res = await fetch('data/bench.json', { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    state.data = await res.json();
+  } catch (e) {
+    document.getElementById('status').textContent =
+      'No benchmark data published yet (' + e.message + '). Run the Bench workflow.';
+    return;
+  }
+  const runs = state.data.runs || [];
+  const groups = [];
+  for (const run of runs) {
+    for (const g of Object.keys(run.metrics || {})) if (!groups.includes(g)) groups.push(g);
+  }
+  if (groups.length === 0) {
+    document.getElementById('status').textContent = 'benchmark history is empty';
+    return;
+  }
+  state.groups = groups;
+  state.group = groups[0];
+  renderAll();
+}
+
+boot();
+</script>
+</body>
+</html>

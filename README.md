@@ -37,10 +37,22 @@ make test-lifo-slot   # LIFO 槽收敛 + 反垄断
 make test-stack-overflow # 8MB 栈溢出干净报错
 make bench-ui         # 协程调度基准
 make bench-ui-io      # I/O 基准
+make bench-json       # 采集为 JSON（scripts/bench_collect.mjs，多次取最小值）
 ```
 
 默认 `TOOLCHAIN=clang`（musl 静态链接）。可用 `TOOLCHAIN=zig|gcc|gcc-musl`
 切换；`BUILD=release` 为优化构建；`STD=c23|gnu23` 选择标准。
+
+## 基准追踪
+
+`.github/workflows/bench.yml` 在 main 每次推送、每日定时或手动触发时构建
+release 基准，运行 3 次取每项最小值，将结果追加到 `gh-pages` 分支的历史
+数据，并发布可视化面板：
+
+**https://apeiroha.github.io/ui/**
+
+面板按指标展示 ns/op 随时间的变化趋势、最新值与环比涨跌。历史数据存于
+`gh-pages` 的 `data/bench.json`，页面模板为 `bench/index.html`。
 
 ## 环境变量
 
