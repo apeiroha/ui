@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.toolchain }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [ clang, gcc ]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang gcc musl-tools
+
+      - name: Build library
+        run: make libui TOOLCHAIN=${{ matrix.toolchain }}
+
+      - name: Run test suite
+        run: make test TOOLCHAIN=${{ matrix.toolchain }}
+
+  asan:
+    name: ASan P0 regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang musl-tools
+
+      - name: Run ASan regression
+        run: make test-p0-asan TOOLCHAIN=clang
+
+  release:
+    name: release build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang musl-tools
+
+      - name: Build optimized library
+        run: make libui BUILD=release TOOLCHAIN=clang
