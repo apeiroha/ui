@@ -16,7 +16,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        toolchain: [ clang, gcc ]
+        include:
+          # clang ships a complete C23 front end; gcc 13 (Ubuntu 24.04)
+          # still spells the standard `c2x` (same feature set for this code).
+          - toolchain: clang
+            std: c23
+          - toolchain: gcc
+            std: c2x
     steps:
       - uses: actions/checkout@v4
 
@@ -26,10 +32,10 @@ jobs:
           sudo apt-get install -y clang gcc musl-tools
 
       - name: Build library
-        run: make libui TOOLCHAIN=${{ matrix.toolchain }}
+        run: make libui TOOLCHAIN=${{ matrix.toolchain }} STD=${{ matrix.std }}
 
       - name: Run test suite
-        run: make test TOOLCHAIN=${{ matrix.toolchain }}
+        run: make test TOOLCHAIN=${{ matrix.toolchain }} STD=${{ matrix.std }}
 
   asan:
     name: ASan P0 regression
