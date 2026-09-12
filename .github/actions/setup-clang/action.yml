@@ -1,0 +1,13 @@
+name: setup-clang
+description: Install clang 19 (matching the dev toolchain) and musl
+
+runs:
+  using: composite
+  steps:
+    - name: Install clang 19 + musl
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y musl-tools wget
+        wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s 19
+        clang-19 --version

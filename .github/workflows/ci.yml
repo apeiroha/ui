@@ -17,25 +17,25 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # clang ships a complete C23 front end; gcc 13 (Ubuntu 24.04)
-          # still spells the standard `c2x` (same feature set for this code).
+          # clang 19 matches the development toolchain.  gcc 13 (Ubuntu
+          # 24.04) still spells the C standard `c2x` (same feature set
+          # for this code).
           - toolchain: clang
             std: c23
+            cc: clang-19
           - toolchain: gcc
             std: c2x
+            cc: x86_64-linux-gnu-gcc
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang gcc musl-tools
+      - uses: ./.github/actions/setup-clang
 
       - name: Build library
-        run: make libui TOOLCHAIN=${{ matrix.toolchain }} STD=${{ matrix.std }}
+        run: make libui TOOLCHAIN=${{ matrix.toolchain }} STD=${{ matrix.std }} CC=${{ matrix.cc }}
 
       - name: Run test suite
-        run: make test TOOLCHAIN=${{ matrix.toolchain }} STD=${{ matrix.std }}
+        run: make test TOOLCHAIN=${{ matrix.toolchain }} STD=${{ matrix.std }} CC=${{ matrix.cc }}
 
   asan:
     name: ASan P0 regression
@@ -43,13 +43,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang musl-tools
+      - uses: ./.github/actions/setup-clang
 
       - name: Run ASan regression
-        run: make test-p0-asan TOOLCHAIN=clang
+        run: make test-p0-asan TOOLCHAIN=clang CC=clang-19
 
   release:
     name: release build
@@ -57,10 +54,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang musl-tools
+      - uses: ./.github/actions/setup-clang
 
       - name: Build optimized library
-        run: make libui BUILD=release TOOLCHAIN=clang
+        run: make libui BUILD=release TOOLCHAIN=clang CC=clang-19
