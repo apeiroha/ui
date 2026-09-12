@@ -90,6 +90,9 @@ $(BUILD_DIR)/libui.a: $(UI_SRC) $(UI_START) $(UI_ASM) ui.h ui_internal.h | $(BUI
 	          $(BUILD_DIR)/ui_sync.o $(BUILD_DIR)/ui_io.o $(BUILD_DIR)/ui_waitq.o \
 	          $(BUILD_DIR)/start.o $(BUILD_DIR)/ui_switch.o
 
+$(BUILD_DIR)/start.o: start.c ui.h ui_internal.h | $(BUILD_DIR)
+	$(CC) $(UI_CFLAGS) -I. -fno-sanitize=all -c -o $@ start.c
+
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
@@ -194,11 +197,11 @@ bench-ui-perf:
 
 # ── Aggregate ──
 .PHONY: all test test-ui test-c8-race test-p0 test-p0-asan test-udp-echo \
-        test-sched-iopark test-stack-overflow bench-ui bench-ui-io \
-        libui clean
+        test-sched-iopark test-spawn-steal test-lifo-slot test-stack-overflow \
+        bench-ui bench-ui-io libui clean
 
 test: test-ui test-c8-race test-p0 test-udp-echo test-sched-iopark \
-       test-stack-overflow
+       test-spawn-steal test-stack-overflow
 
 all: libui
 

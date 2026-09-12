@@ -1,5 +1,7 @@
 #include "ui_internal.h"
+#ifdef UI_DEBUG_LIFO
 #include <ucontext.h>
+#endif
 
 #include <stdlib.h>
 #include <string.h>
@@ -65,6 +67,7 @@ ui_runq_insert_locked(ui_vCPU *v, ui_Goro *g)
     atomic_fetch_add(&v->runq_count, 1);
 }
 
+#ifdef UI_DEBUG_LIFO
 /* TEMP DEBUG: record a delivery of g by vcpu v with kind k */
 static inline void ui_dbg_deliver(ui_Goro *g, int v, int k)
 {
@@ -76,6 +79,7 @@ static inline void ui_dbg_deliver(ui_Goro *g, int v, int k)
 /* TEMP DEBUG: waking a goro that is currently RUNNING somewhere = bug */
 static void ui_dbg_check_not_current(ui_Goro *g)
 {
+    if (!g) return;
     for (int vi = 0; vi < g_ui_sched.nvcpus; vi++) {
         ui_vCPU *vv = &g_ui_sched.vcpus[vi];
         if (vv->current == g) {
@@ -87,6 +91,10 @@ static void ui_dbg_check_not_current(ui_Goro *g)
         }
     }
 }
+#else
+#define ui_dbg_deliver(g, v, k)          ((void)0)
+#define ui_dbg_check_not_current(g)      ((void)0)
+#endif
 
 void
 ui_runq_remove(ui_Goro *g)
@@ -641,7 +649,7 @@ ui_schedule(void)
      * occupant is demoted to the FIFO tail and the counter resets —
      * ui has no sysmon preemption, so this is the fairness guard that
      * lets queued work interleave with a hot communicate-then-run pair. */
-    int from_slot = 0;
+    int from_slot = 0;   /* UI_DEBUG_LIFO only */
     if (v->runnext)
     {
         if (v->runnext_polls < UI_RUNNEXT_MAX_POLLS)
@@ -649,7 +657,11 @@ ui_schedule(void)
             g = v->runnext;
             v->runnext = NULL;
             v->runnext_polls++;
+#ifdef UI_DEBUG_LIFO
             from_slot = 1;
+#else
+            (void)from_slot;
+#endif
         }
         else
         {
@@ -707,6 +719,7 @@ ui_schedule(void)
             goto no_goro;
         }
 
+#ifdef UI_DEBUG_LIFO
         /* TEMP DEBUG (lifo investigation): double-run detector */
         if (g->state != UI_READY) {
             fprintf(stderr,
@@ -731,6 +744,7 @@ ui_schedule(void)
                 _exit(43);
             }
         }
+#endif
 
         g->state = UI_RUNNING;
         g->voluntary = 0;
@@ -744,7 +758,13 @@ ui_schedule(void)
             ui_first_switch(&v->sched_rsp, g->rsp);
         }
         else
+        {
+            /* A PinTo-bound goro has now resumed on its requested home;
+             * release the soft binding so stealing can migrate it. */
+            if (g->pinned && v->id == g->home_vcpu)
+                g->pinned = 0;
             ui_switch(&v->sched_rsp, g->rsp);
+        }
     }
     else
     {
@@ -764,8 +784,11 @@ no_goro:
 static void
 ui_sigsegv_handler(int sig, siginfo_t *info, void *ctx)
 {
-    intptr_t base = 0, top = 0, fault = (intptr_t)info->si_addr;
-    /* TEMP DEBUG (lifo investigation): dump fault context unconditionally */
+    (void)sig; (void)ctx;
+    intptr_t fault = (intptr_t)info->si_addr;
+
+#ifdef UI_DEBUG_LIFO
+    /* TEMP DEBUG (lifo investigation): dump fault context */
     {
         ucontext_t *uc = (ucontext_t *)ctx;
         ui_vCPU *dv = ui_this_vcpu;
@@ -784,17 +807,17 @@ ui_sigsegv_handler(int sig, siginfo_t *info, void *ctx)
                 dv->current->first_run, dv->current->pinned,
                 dv->current->stack_base);
     }
+#endif
 
     /* Only check the current vCPU — cross-vCPU access to v->current
      * races with ui_schedule's v->current = NULL assignment (C8). */
     ui_vCPU *v = ui_this_vcpu;
     if (v && v->current && v->current->stack_base)
     {
-        base = (intptr_t)v->current->stack_base;
+        intptr_t base = (intptr_t)v->current->stack_base;
         intptr_t top = base + (intptr_t)v->current->stack_reserve;
-        (void)0;
-        fault = (intptr_t)info->si_addr;
-        /* TEMP DEBUG (lifo investigation) */
+
+#ifdef UI_DEBUG_LIFO
         {
             ucontext_t *uc = (ucontext_t *)ctx;
             fprintf(stderr,
@@ -806,10 +829,8 @@ ui_sigsegv_handler(int sig, siginfo_t *info, void *ctx)
                 v->current->state, v->current->home_vcpu,
                 v->current->first_run, v->current->pinned);
         }
-        base = (intptr_t)v->current->stack_base;
-        top = base + (intptr_t)v->current->stack_reserve;
-        (void)0;
-        fault = (intptr_t)info->si_addr;
+#endif
+
         /* Include the slot's guard page (one page below base): a stack
          * overflow lands there when the committed region has reached
          * the reserve.  ui_stack_grow decides -2 (overflow, report)
@@ -1097,9 +1118,11 @@ static void
 ui_runnext_put(ui_vCPU *v, ui_Goro *g)
 {
     ui_Goro *old = NULL;
+#ifdef UI_DEBUG_LIFO
     g->dbg_slot_writer = v->id;
     g->dbg_state_at_fill = g->state;
     g->dbg_prev_voluntary = g->prev ? 1 : 0;
+#endif
     pthread_spin_lock(&v->runq_lock);
     old = v->runnext;
     v->runnext = g;
@@ -1249,6 +1272,9 @@ ui_PinTo(int vcpu)
     if (!v || !v->current) return;
     if (vcpu < 0 || vcpu >= g_ui_sched.nvcpus) vcpu = 0;
     v->current->home_vcpu = vcpu;
+    /* Mark as bound so channel direct handoff does not pull the goro
+     * back onto the waker's core; released once it resumes on `vcpu`. */
+    v->current->pinned = 1;
 }
 
 void
@@ -1281,23 +1307,19 @@ ui_SleepUs(unsigned int us)
     ui_switch(&g->rsp, v->sched_rsp);
 }
 
-void
-ui_wakeup(ui_Goro *g)
+/* Route a goro whose state has already been transitioned to UI_READY
+ * onto its home vCPU: same-vCPU feeds the LIFO slot, cross-vCPU goes
+ * through standbyq (avoids the cross-vCPU runq race and cross-vCPU
+ * sleepq access — the target drains and removes from its own sleepq).
+ * Shared by ui_wakeup and ui_wakeup_handoff. */
+static void
+ui_wake_enqueue(ui_Goro *g)
 {
-    ui_dbg_check_not_current(g);
-    if (!g) return;
-    if (!__sync_bool_compare_and_swap(&g->state, UI_WAITING, UI_READY))
-        return;
-
     int target = g->home_vcpu;
     if (target < 0 || target >= g_ui_sched.nvcpus) target = 0;
 
     ui_vCPU *v_target = &g_ui_sched.vcpus[target];
 
-    /* Same-vCPU: remove from sleepq and insert directly into runq.
-     * Cross-vCPU: push to standbyq (avoids cross-vCPU runq race AND
-     * cross-vCPU sleepq access).  The target vCPU's standbyq drain
-     * will remove from the sleepq locally. */
     if (ui_get_vcpu_id() == target)
     {
         if (g->sleepq_idx >= 0)
@@ -1320,6 +1342,17 @@ ui_wakeup(ui_Goro *g)
     }
 }
 
+void
+ui_wakeup(ui_Goro *g)
+{
+    ui_dbg_check_not_current(g);
+    if (!g) return;
+    if (!__sync_bool_compare_and_swap(&g->state, UI_WAITING, UI_READY))
+        return;
+
+    ui_wake_enqueue(g);
+}
+
 /* Wake a channel direct-handoff partner onto the WAKER's LIFO slot.
  * This is the re-convergence step that keeps a ping-pong pair glued to
  * one vCPU: even if the pair was split earlier by stealing, every
@@ -1328,8 +1361,9 @@ ui_wakeup(ui_Goro *g)
  *
  * Rewrites home_vcpu to the waker's vCPU — sanctioned soft-binding
  * drift, identical to what work stealing does when it migrates a goro.
- * Pinned goros keep their targeted placement and fall back to normal
- * routing.  Locking note: callers hold their channel spinlock; nesting
+ * Explicitly bound goros (GoOn first-run pin / PinTo) keep their
+ * targeted placement and route via ui_wake_enqueue instead.
+ * Locking note: callers hold their channel spinlock; nesting
  * ch-lock -> runq_lock already exists via plain ui_wakeup and no code
  * path takes them in reverse order. */
 void
@@ -1341,16 +1375,19 @@ ui_wakeup_handoff(ui_Goro *g)
         return;
 
     ui_vCPU *cur = ui_this_vcpu;
-    if (!cur || !cur->current || g->pinned ||
-        cur->id >= g_ui_sched.nvcpus)
+    if (cur && cur->current && !g->pinned &&
+        cur->id < g_ui_sched.nvcpus)
     {
-        ui_wakeup(g);
+        g->home_vcpu = cur->id;
+        ui_dbg_deliver(g, cur->id, 9);
+        ui_runnext_put(cur, g);
         return;
     }
 
-    g->home_vcpu = cur->id;
-    ui_dbg_deliver(g, cur->id, 9);
-    ui_runnext_put(cur, g);
+    /* Bound goro: honor g->home_vcpu.  Note the state CAS above already
+     * succeeded, so we must enqueue directly rather than call ui_wakeup
+     * (whose own CAS would fail and silently drop the wakeup). */
+    ui_wake_enqueue(g);
 }
 
 void
