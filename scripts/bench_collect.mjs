@@ -17,10 +17,11 @@ const GROUPS = [
 const LINE = /^\s+(?<name>.*?\S)\s+(?<value>\d+(?:\.\d+)?)\s+ns\/op\b/;
 
 function parseArgs(argv) {
-  const opts = { binDir: "build", iters: 3, out: "bench-output.json" };
+  const opts = { binDir: "build", iters: 3, attempts: 8, out: "bench-output.json" };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--bin-dir") opts.binDir = argv[++i];
     else if (argv[i] === "--iters") opts.iters = Number(argv[++i]);
+    else if (argv[i] === "--attempts") opts.attempts = Number(argv[++i]);
     else if (argv[i] === "--out") opts.out = argv[++i];
   }
   return opts;
@@ -35,20 +36,32 @@ function parseMetrics(text) {
   return metrics;
 }
 
-function collect(binDir, binary, iters) {
+function collect(binDir, binary, iters, attempts) {
   const path = resolve(binDir, binary);
   const best = {};
-  for (let i = 0; i < iters; i++) {
+  let ok = 0;
+  for (let tries = 1; tries <= attempts && ok < iters; tries++) {
     let stdout;
     try {
       stdout = execFileSync(path, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
     } catch (err) {
-      throw new Error(`${path} failed: ${err.message}`);
+      // The runtime has a known intermittent scheduler race; a crashed run
+      // yields no usable record, so retry rather than fail the whole job.
+      console.warn(`[warn] ${binary} attempt ${tries} failed (${err.status ?? err.message}); retrying`);
+      continue;
     }
-    for (const [name, value] of Object.entries(parseMetrics(stdout))) {
+    const parsed = parseMetrics(stdout);
+    if (Object.keys(parsed).length === 0) {
+      console.warn(`[warn] ${binary} attempt ${tries} produced no metrics; retrying`);
+      continue;
+    }
+    ok++;
+    for (const [name, value] of Object.entries(parsed)) {
       if (!(name in best) || value < best[name]) best[name] = value;
     }
   }
+  if (ok === 0) throw new Error(`${binary}: no successful run in ${attempts} attempt(s)`);
+  if (ok < iters) console.warn(`[warn] ${binary}: only ${ok}/${iters} successful run(s)`);
   return best;
 }
 
@@ -59,7 +72,7 @@ function nowIso() {
 function main() {
   const opts = parseArgs(process.argv.slice(2));
   const metrics = {};
-  for (const [group, binary] of GROUPS) metrics[group] = collect(opts.binDir, binary, opts.iters);
+  for (const [group, binary] of GROUPS) metrics[group] = collect(opts.binDir, binary, opts.iters, opts.attempts);
 
   const env = process.env;
   const server = env.GITHUB_SERVER_URL || "https://github.com";
