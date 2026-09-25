@@ -467,7 +467,43 @@
           "ui_Read (always-available data)": 3595
         }
       }
+    },
+    {
+      "id": "gh-36116141971",
+      "commit": "2349b1019ce2876d3b3876d57f9f415bec9e2004",
+      "short": "2349b101",
+      "commit_url": "https://github.com/apeiroha/ui/commit/2349b1019ce2876d3b3876d57f9f415bec9e2004",
+      "ref": "main",
+      "date": "2026-09-25T09:02:19Z",
+      "run_url": "https://github.com/apeiroha/ui/actions/runs/36116141971",
+      "env": {
+        "nvcpus": 4,
+        "toolchain": "clang",
+        "build": "release",
+        "iters": 3
+      },
+      "metrics": {
+        "bench_ui": {
+          "goroutine spawn+exit": 10180,
+          "chan send+recv (buffered)": 18,
+          "chan try_send+recv": 18,
+          "mutex lock+unlock (uncontested)": 5,
+          "mutex trylock+unlock (uncontested)": 5,
+          "mutex contention spin (50 goros × 1000)": 87,
+          "mutex contention work (50 goros × 1000)": 1034,
+          "mutex contention (50 goros × 100 iter)": 153,
+          "chan ping-pong (unbuffered, 2 goros)": 186,
+          "local fanout spawn+exit": 8736,
+          "rwlock read (single goro)": 7,
+          "rwlock read (4 goros, multi-vcpu)": 38,
+          "rwlock read (4 goros + writer)": 34,
+          "rwlock write (4 goros, multi-vcpu)": 27
+        },
+        "bench_ui_io": {
+          "ui_Read (always-available data)": 3649
+        }
+      }
     }
   ],
-  "generated_at": "2026-09-24T08:41:44Z"
+  "generated_at": "2026-09-25T09:02:19Z"
 }
