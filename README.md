@@ -19,6 +19,9 @@ recvmsg 与 mmsg 批量收发。
   mmsg 批量收发（SendMMsg/RecvMMsg/RecvBatch）
 - **CQE 代际令牌** — 每次 I/O 提交自增 `io_token`，区分同地址前后代 completion，
   关闭 stale-CQE ABA 窗口
+- **事件驱动空载** — ring 通过 `IORING_REGISTER_EVENTFD` 把每个 completion 直接
+  post 到本 vCPU 的 eventfd，一次 `ppoll(event_fd)` 即覆盖跨 vCPU 唤醒、I/O 完成、
+  sleepq 到期三类唤醒源；空闲 vCPU 每次唤醒只花一次 syscall，不再有定频轮询
 - **零依赖** — 不需要任何外部库，`ui_Init` 后即可使用
 
 ## 构建
@@ -34,6 +37,7 @@ make test-udp-echo    # UDP 回显（io_uring）
 make test-sched-iopark# I/O 阻塞调度
 make test-spawn-steal # 跨 vCPU 窃取
 make test-lifo-slot   # LIFO 槽收敛 + 反垄断
+make test-idle-wait   # 事件驱动空载：唤醒延迟 + 关机不空等
 make test-stack-overflow # 8MB 栈溢出干净报错
 make bench-ui         # 协程调度基准
 make bench-ui-io      # I/O 基准
@@ -60,6 +64,7 @@ release 基准，运行 3 次取每项最小值，将结果追加到 `gh-pages` 
 |------|------|------|
 | `UI_NVCPUS` | vCPU 数量（1–64） | CPU 核数 |
 | `UI_YIELD_IO_MASK` | 连续 I/O 完成每 N 次自愿让出，0 关闭 | 255 |
+| `UI_IDLE_WAIT_MS` | 空闲 vCPU 的兜底唤醒超时（ms）。所有真实唤醒源都是事件驱动的，这个值只兜底“丢唤醒”，并直接决定空载 CPU | 100 |
 | `UI_STACK_RELEASE_ON_RECYCLE` | 回收 goro 时释放栈（不等 `ui_Fini`） | 0 |
 
 ## 快速上手

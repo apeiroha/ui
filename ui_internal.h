@@ -75,6 +75,15 @@ struct ui_RecvMulti
 #define UI_YIELD_IO_MASK_DEFAULT  255   /* yield every 256th I/O */
 extern uint32_t ui_yield_io_mask;
 
+/* Upper bound on how long a parked vCPU blocks before re-checking for
+ * work it was never notified about.  Every real wake source (cross-vCPU
+ * wakeup, I/O completion, sleepq deadline) signals directly, so this is
+ * a lost-wakeup watchdog, not a polling interval — and it dominates
+ * idle CPU, since each expiry costs one syscall per vCPU.
+ * Overridable via env UI_IDLE_WAIT_MS at ui_Init() time. */
+#define UI_IDLE_WAIT_MS_DEFAULT   100   /* ms */
+extern uint32_t ui_idle_wait_ms;
+
 /* Idle spin iterations before blocking (roughly 0.5us of pause loops).
  * Cuts the eventfd+ppoll round trip for wakes that arrive while the
  * vCPU is still on-CPU looking for work. */
@@ -194,6 +203,11 @@ typedef struct
     void            *buf_ring_bufs;        /* mmap'd buffer data */
     size_t           buf_ring_mmap_sz;
     int              has_multishot;
+    /* Ring posts every completion to event_fd (IORING_REGISTER_EVENTFD).
+     * This is what lets a single ppoll(event_fd) cover I/O completions
+     * as well as cross-vCPU wakeups; without it only a poll timeout can
+     * observe an I/O completion.  0 if registration failed. */
+    int              cq_eventfd;
     struct ui_RecvMulti *active_multishot;
     /* Closed multishots awaiting their cancel+terminal CQEs before free. */
     struct ui_RecvMulti *retired_multishot;

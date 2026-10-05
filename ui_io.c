@@ -142,6 +142,24 @@ ui_vcpu_ensure_ring(ui_vCPU *v)
     v->cq_ring_entries = (unsigned *)(cq_ptr + p.cq_off.ring_entries);
     v->cq_cqes = (struct io_uring_cqe *)(cq_ptr + p.cq_off.cqes);
 
+    /* Hand the ring our own event_fd so the kernel posts to it on every
+     * completion.  This is what makes a single ppoll(event_fd) a complete
+     * wake channel: without it a parked vCPU cannot observe an I/O
+     * completion at all and only a poll timeout will reveal one.
+     *
+     * DEFER_TASKRUN does not defeat this — the completion's task_work
+     * runs on the vCPU thread and signals the eventfd from there.
+     * Verified to fire for socket completions under SINGLE_ISSUER +
+     * DEFER_TASKRUN + COOP_TASKRUN.
+     *
+     * Failure is not fatal: ui_vcpu_idle() falls back to a short block
+     * timeout, which is slower to wake but still correct. */
+    v->cq_eventfd = 0;
+    if (v->event_fd >= 0 &&
+        syscall(__NR_io_uring_register, v->ring_fd,
+                IORING_REGISTER_EVENTFD, &v->event_fd, 1) == 0)
+        v->cq_eventfd = 1;
+
     return 0;
 
 err:
@@ -286,12 +304,15 @@ ui_uring_submit(ui_vCPU *v)
     ui_uring_enter(v->ring_fd, 1, 0, IORING_ENTER_GETEVENTS);
 }
 
-/* ── Idle wait: drain io_uring completions then block on eventfd ── */
+/* ── Idle wait: block until any wake source signals ── */
 
-/* Drain pending io_uring completions, then block via ppoll(eventfd)
- * until timeout or cross-vCPU wakeup.  The ppoll approach avoids
- * the complexity of POLL_ADD + TIMEOUT SQEs and is simpler while
- * still improving over the original dual-fd ppoll(ring_fd+eventfd). */
+/* One ppoll(event_fd) covers every wake source:
+ *   - cross-vCPU wakeup: the waker writes event_fd (ui_wake_vcpu)
+ *   - I/O completion:    the ring posts to event_fd (IORING_REGISTER_EVENTFD)
+ *   - sleepq deadline:   the caller's timeout
+ * so a parked vCPU costs one syscall per wake instead of a fixed-rate
+ * timer poll.  The timeout is a lost-wakeup watchdog, not a poll interval.
+ */
 void
 ui_uring_idle_wait(ui_vCPU *v, uint64_t wait_us)
 {
@@ -313,13 +334,17 @@ ui_uring_idle_wait(ui_vCPU *v, uint64_t wait_us)
     int ret = ppoll(&pfd, 1, &ts, NULL);
     if (ret > 0)
     {
+        /* Drain the whole counter: it accumulates one increment per CQE
+         * as well as per cross-vCPU wakeup, so leaving a stale count
+         * behind would make the next block return spuriously. */
         uint64_t val;
         while (read(v->event_fd, &val, sizeof(val)) == sizeof(val))
             ;
     }
 
     /* On wakeup, re-flush completions (I/O may have completed while
-     * we were blocked; ppoll didn't check ring_fd). */
+     * we were blocked; the CQE itself only appears after GETEVENTS
+     * under DEFER_TASKRUN). */
     if (v->ring_fd >= 0)
     {
         ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);

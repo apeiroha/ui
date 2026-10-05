@@ -170,6 +170,14 @@ test-stack-overflow: $(BUILD_DIR)/test_stack_overflow
 	  echo "  TEST: 8MB overflow clean report (guard page) ... PASS" || \
 	  { echo "$$out"; echo "  TEST: 8MB overflow clean report (guard page) ... FAIL (rc=$$rc)"; exit 1; }
 
+TEST_IDLEWAIT_SRC = tests/test_idle_wait.c
+
+$(BUILD_DIR)/test_idle_wait: $(TEST_IDLEWAIT_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
+	$(CC) $(UI_CFLAGS) -I. -o $@ $^ $(LDFLAGS) $(_LIB)
+
+test-idle-wait: $(BUILD_DIR)/test_idle_wait
+	./$(BUILD_DIR)/test_idle_wait
+
 # ── Benchmarks ──
 $(BUILD_DIR)/bench_ui: tests/bench_ui.c $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
 	$(CC) $(UI_CFLAGS) -I. -o $@ $^ $(LDFLAGS) $(_LIB)
@@ -208,7 +216,7 @@ bench-ui-perf:
         bench-ui bench-ui-io bench-json bench-build libui clean
 
 test: test-ui test-c8-race test-p0 test-udp-echo test-sched-iopark \
-       test-spawn-steal test-stack-overflow
+       test-spawn-steal test-idle-wait test-stack-overflow
 
 all: libui
 

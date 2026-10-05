@@ -21,6 +21,11 @@ __thread __attribute__((tls_model("initial-exec"))) ui_vCPU *ui_this_vcpu;
  * 0 = disabled.  Override via env UI_YIELD_IO_MASK. */
 uint32_t ui_yield_io_mask = UI_YIELD_IO_MASK_DEFAULT;
 
+/* Lost-wakeup watchdog for the idle block.  Override via env
+ * UI_IDLE_WAIT_MS; idle CPU is dominated by this value, since each
+ * expiry costs one syscall per parked vCPU. */
+uint32_t ui_idle_wait_ms = UI_IDLE_WAIT_MS_DEFAULT;
+
 void
 ui_runq_init(ui_vCPU *v)
 {
@@ -470,6 +475,27 @@ ui_get_vcpu_id(void)
     return ui_this_vcpu ? ui_this_vcpu->id : 0;
 }
 
+/* Wake every parked vCPU once the last goroutine retires.
+ *
+ * A vCPU only re-reads `running` after its block returns, so with a long
+ * idle block timeout the last vCPU to park would otherwise sit out that
+ * whole timeout before ui_Run()/ui_Fini() could join it.  vCPU 0 must be
+ * included: ui_Run() runs vCPU 0 inline on the calling thread and only
+ * signals the others after it returns, so vCPU 0 has nobody else to
+ * wake it. */
+static void
+ui_goro_retired(void)
+{
+    if (atomic_load(&g_ui_sched.active_count) != 0)
+        return;
+    for (int i = 0; i < g_ui_sched.nvcpus; i++)
+    {
+        uint64_t val = 1;
+        if (g_ui_sched.vcpus[i].event_fd >= 0)
+            (void)!write(g_ui_sched.vcpus[i].event_fd, &val, sizeof(val));
+    }
+}
+
 /* Return a dead goro to a pool. Stacks preserved; physical pages released
  * via MADV_DONTNEED. Must be called outside runq_lock.
  * Tries per-vCPU pool first (no lock), then global pool (mutex). */
@@ -526,6 +552,7 @@ ui_goro_recycle(ui_Goro *cg)
         v->goro_pool[v->goro_pool_count] = cg;
         v->goro_pool_count++;
         atomic_fetch_sub(&g_ui_sched.active_count, 1);
+        ui_goro_retired();
         return;
     }
 
@@ -578,6 +605,7 @@ ui_goro_recycle(ui_Goro *cg)
         free(cg);
     }
     atomic_fetch_sub(&g_ui_sched.active_count, 1);
+    ui_goro_retired();
 }
 
 void
@@ -909,6 +937,8 @@ ui_Init(void)
     g_ui_sched.release_stacks_on_recycle = env_release && atoi(env_release) != 0;
     const char *env_yield = getenv("UI_YIELD_IO_MASK");
     if (env_yield) { int n = atoi(env_yield); if (n >= 0) ui_yield_io_mask = (uint32_t)n; }
+    const char *env_idle = getenv("UI_IDLE_WAIT_MS");
+    if (env_idle) { int n = atoi(env_idle); if (n >= 1) ui_idle_wait_ms = (uint32_t)n; }
     g_ui_sched.nvcpus = ncpus;
     atomic_store(&g_ui_sched.next_vcpu, 0);
     g_ui_sched.vcpus = calloc((size_t)ncpus, sizeof(ui_vCPU));
@@ -1411,9 +1441,20 @@ ui_vcpu_idle(ui_vCPU *v)
     uint64_t now = ui_now_us();
     ui_sleepq_expire(v, now);
 
-    uint64_t wait_us = 100000; /* 100ms default */
-    if (atomic_load(&g_ui_sched.active_count) > 0)
-        wait_us = 1000; /* active runtime: poll for steal every 1ms */
+    uint64_t wait_us = (uint64_t)ui_idle_wait_ms * 1000;
+
+    /* The block covers every wake source: event_fd is written on
+     * cross-vCPU wakeup AND (once the ring registered it) on every I/O
+     * completion.  So the timeout no longer has to be chopped down to
+     * poll for steal or for I/O — it is only a lost-wakeup watchdog.
+     *
+     * The exception is a vCPU with a live ring but no event_fd
+     * registration (old kernel, or registration failed): there, nothing
+     * signals an I/O completion, so a long block would delay it by the
+     * whole timeout.  Fall back to a short poll in that case. */
+    if (v->ring_fd >= 0 && !v->cq_eventfd)
+        wait_us = 1000;
+
     if (v->sleepq_size > 0 && v->sleepq[0]->wakeup_time > now)
     {
         uint64_t delta = v->sleepq[0]->wakeup_time - now;
