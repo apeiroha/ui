@@ -502,14 +502,6 @@ ui_goro_retired(void)
 static void
 ui_goro_recycle(ui_Goro *cg)
 {
-    if (cg->joiner)
-    {
-        cg->joiner->state = UI_READY;
-        ui_dbg_deliver(cg->joiner, cg->joiner->home_vcpu, 5);
-        ui_runq_insert(&g_ui_sched.vcpus[cg->joiner->home_vcpu], cg->joiner);
-        cg->joiner = NULL;
-    }
-
     ui_vCPU *v = ui_get_vcpu();
 
     /* 1. Try per-vCPU pool (no lock) */
@@ -1097,7 +1089,6 @@ ui_goro_alloc(ui_Func0 entry, void *arg, int stack_size)
     g->next = NULL;
     g->free_next = NULL;
     g->standby_next = NULL;
-    g->joiner = NULL;
     g->wait_node.active = 0;
     g->wait_node.g = NULL;
     g->io_pending = 0;

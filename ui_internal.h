@@ -153,8 +153,6 @@ struct ui_Goro
     ui_Goro  *free_next;
     ui_Goro  *standby_next;
 
-    ui_Goro  *joiner;
-
     uint64_t  wakeup_time;  /* absolute us (monotonic), for sleepq */
 
     int       rwlock_shard;  /* shard used by the currently held read lock */
