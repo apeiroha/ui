@@ -1093,6 +1093,61 @@ static void test_pinto_clamp(void) {
     PASS();
 }
 
+/* ── PinTo is a soft binding: work stealing may still migrate the goro ──
+ *
+ * ui_PinTo is documented as "soft binding ... Work stealing may still
+ * migrate the goro afterwards", so it must not confer the steal immunity
+ * that `pinned` grants a GoOn goro.  PinTo used to set `pinned`, which
+ * breaks the contract twice over: it exempts the goro from stealing, and
+ * the flag clears only when the goro next resumes on the requested vCPU --
+ * so a goro that rebinds to the core it is already on never clears it and
+ * stays unstealable for good.  ui_steal_work tests `!batch_end->pinned`,
+ * and a pinned entry additionally shields every older goro behind it, so a
+ * single stuck flag can make a whole runq tail unstealable.
+ *
+ * This asserts the flags directly rather than watching for a migration.
+ * Observing a steal needs an idle vCPU to win pthread_spin_trylock against
+ * a busy one, which is a coin flip on a loaded box; the invariant we
+ * actually care about is simply that ui_PinTo leaves the steal-immunity
+ * flag alone and sets its own instead.  (The neighbours do assert on
+ * internals too -- test_pinto_clamp reads v->current->home_vcpu.)
+ */
+
+static atomic_int pin_flag_pinned;   /* pinned  as seen right after ui_PinTo */
+static atomic_int pin_flag_bound;    /* bound   as seen right after ui_PinTo */
+
+static void pin_softbinding_victim(void) {
+    ui_PinTo(0);   /* rebind to the core we are already on */
+    ui_vCPU *v = ui_this_vcpu;
+    atomic_store(&pin_flag_pinned, v->current->pinned);
+    atomic_store(&pin_flag_bound, v->current->bound);
+    ui_Yield();
+}
+
+static void pin_softbinding_feeder(void) {
+    for (int i = 0; i < 8; i++) ui_GoOn(pin_softbinding_victim, 0);
+    ui_Yield();
+}
+
+static void test_pinto_softbinding(void) {
+    TEST("PinTo sets bound, not the steal-immune pinned");
+    setenv("UI_NVCPUS", "2", 1);
+    ASSERT(ui_Init() == 0, "ui_Init failed");
+    atomic_store(&pin_flag_pinned, -1);
+    atomic_store(&pin_flag_bound, -1);
+    ui_Go(pin_softbinding_feeder);
+    ui_Run();
+    ui_Fini();
+    unsetenv("UI_NVCPUS");
+    int p = atomic_load(&pin_flag_pinned);
+    int b = atomic_load(&pin_flag_bound);
+    char msg[128];
+    snprintf(msg, sizeof msg,
+             "after ui_PinTo: pinned=%d (want 0), bound=%d (want 1)", p, b);
+    ASSERT(p == 0 && b == 1, msg);
+    PASS();
+}
+
 int main(void) {
     printf("=== UI (うい) Coroutine Library Extended Tests ===\n\n");
 
@@ -1126,6 +1181,7 @@ int main(void) {
     test_nvcpus();
     test_pinto_rebind();
     test_pinto_clamp();
+    test_pinto_softbinding();
 
     /* P0 bug regression tests */
     test_tryrecv_closed_order();

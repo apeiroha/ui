@@ -136,7 +136,19 @@ struct ui_Goro
     int       home_vcpu;
     int       first_run;
     int       pinned;      /* 1 = GoOn-placed: not stealable until it has
-                              * run once on its requested vCPU */
+                              * run once on its requested vCPU.  Also keeps
+                              * a bound goro out of foreign LIFO slots and
+                              * stops channel handoff from rewriting its
+                              * home.  GoOn sets and first-schedule clears
+                              * it. */
+    int       bound;       /* 1 = ui_PinTo'd: a user-set home that channel
+                              * direct handoff must not rewrite.  Unlike
+                              * `pinned` this grants NO steal immunity --
+                              * ui_PinTo is documented as a soft binding
+                              * that work stealing may still migrate.
+                              * Cleared once the goro resumes on that home
+                              * (ui_schedule), so it only covers the window
+                              * between the call and the first wakeup there. */
 #ifdef UI_DEBUG_LIFO
     /* TEMP DEBUG (lifo investigation) — build with -DUI_DEBUG_LIFO */
     int       dbg_slot_writer;

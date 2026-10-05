@@ -779,10 +779,22 @@ ui_schedule(void)
         }
         else
         {
-            /* A PinTo-bound goro has now resumed on its requested home;
-             * release the soft binding so stealing can migrate it. */
-            if (g->pinned && v->id == g->home_vcpu)
-                g->pinned = 0;
+            /* This goro has now resumed on its requested home, so the
+             * explicit binding has served its purpose: release it so
+             * stealing can migrate the goro and, for a PinTo'd one, so
+             * handoff may re-converge it again later.
+             *
+             * Both flags clear on the same condition, but they were set
+             * for different reasons -- `pinned` by GoOn (which also grants
+             * steal immunity), `bound` by ui_PinTo (which must not).  A
+             * goro can only hold one of them at a time in practice, so
+             * releasing either whenever the goro is home is correct and
+             * costs nothing. */
+            if (v->id == g->home_vcpu)
+            {
+                if (g->pinned) g->pinned = 0;
+                if (g->bound)  g->bound = 0;
+            }
             ui_switch(&v->sched_rsp, g->rsp);
         }
     }
@@ -1085,6 +1097,8 @@ ui_goro_alloc(ui_Func0 entry, void *arg, int stack_size)
     g->entry = entry;
     g->arg = arg;
     g->state = UI_READY;
+    g->pinned = 0;
+    g->bound = 0;
     g->prev = NULL;
     g->next = NULL;
     g->free_next = NULL;
@@ -1280,12 +1294,26 @@ ui_Yield(void)
     ui_switch(&v->current->rsp, v->sched_rsp);
 }
 
-/* Rebind the CURRENT goro to an explicit home vCPU (soft binding, same
- * semantics as GoOn): the goro finishes its current quantum on this vCPU
- * and, from its NEXT blocking point on, is woken/resumed on the new home
- * (chan/sync/select/io_uring wakeups route via home_vcpu; ui_Sleep stays
- * on the vCPU that submitted it — per-vCPU sleepq).  Work stealing may
- * still migrate the goro afterwards.  Out-of-range vcpu clamps to 0. */
+/* Rebind the CURRENT goro to an explicit home vCPU (soft binding): the goro
+ * finishes its current quantum on this vCPU and, from its NEXT blocking
+ * point on, is woken/resumed on the new home (chan/sync/select/io_uring
+ * wakeups route via home_vcpu; ui_Sleep stays on the vCPU that submitted
+ * it — per-VCPU sleepq).  Work stealing may still migrate the goro
+ * afterwards.  Out-of-range vcpu clamps to 0.
+ *
+ * The binding is signalled with `bound`, not `pinned`: `pinned` also
+ * exempts a goro from stealing (ui_steal_work, slot stealing), which
+ * would contradict "work stealing may still migrate it" above -- and, since
+ * the flag clears only when the goro next resumes on the requested vCPU, a
+ * PinTo'd goro that keeps running on the current vCPU would stay exempt
+ * forever.  `bound` is consulted only by channel direct handoff, whose
+ * job is to pull a pair back onto the sender's core and so must not
+ * silently undo a user-set home.
+ *
+ * Note the binding covers the window between this call and the goro's first
+ * wakeup on `vcpu`; after that it is released and handoff may re-converge
+ * the goro as it does for any other pair.
+ */
 void
 ui_PinTo(int vcpu)
 {
@@ -1293,9 +1321,9 @@ ui_PinTo(int vcpu)
     if (!v || !v->current) return;
     if (vcpu < 0 || vcpu >= g_ui_sched.nvcpus) vcpu = 0;
     v->current->home_vcpu = vcpu;
-    /* Mark as bound so channel direct handoff does not pull the goro
-     * back onto the waker's core; released once it resumes on `vcpu`. */
-    v->current->pinned = 1;
+    /* Stop channel direct handoff from pulling the goro back onto the
+     * waker's core; released once it resumes on `vcpu` (ui_schedule). */
+    v->current->bound = 1;
 }
 
 void
@@ -1382,8 +1410,9 @@ ui_wakeup(ui_Goro *g)
  *
  * Rewrites home_vcpu to the waker's vCPU — sanctioned soft-binding
  * drift, identical to what work stealing does when it migrates a goro.
- * Explicitly bound goros (GoOn first-run pin / PinTo) keep their
- * targeted placement and route via ui_wake_enqueue instead.
+ * Explicitly bound goros keep their targeted placement and route via
+ * ui_wake_enqueue instead: `pinned` (GoOn first-run pin) or `bound`
+ * (ui_PinTo).
  * Locking note: callers hold their channel spinlock; nesting
  * ch-lock -> runq_lock already exists via plain ui_wakeup and no code
  * path takes them in reverse order. */
@@ -1396,7 +1425,7 @@ ui_wakeup_handoff(ui_Goro *g)
         return;
 
     ui_vCPU *cur = ui_this_vcpu;
-    if (cur && cur->current && !g->pinned &&
+    if (cur && cur->current && !g->pinned && !g->bound &&
         cur->id < g_ui_sched.nvcpus)
     {
         g->home_vcpu = cur->id;
