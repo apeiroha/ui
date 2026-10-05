@@ -1111,7 +1111,6 @@ ui_goro_alloc(ui_Func0 entry, void *arg, int stack_size)
     g->chan_send_ptr = NULL;
     g->chan_handoff = 0;
 
-    g->pinned = 0;
     ui_goro_init(g);
     g->first_run = 1;
     return g;
