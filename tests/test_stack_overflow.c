@@ -8,14 +8,24 @@
  * terminate with the clean "ui stack overflow: exceeded 8MB limit"
  * report, exit 1 — instead of a raw SIGSEGV (exit 139).
  *
- * The Makefile target checks the exit code and the stderr message. */
+ * The Makefile target checks the exit code and the stderr message.
+ *
+ * The use of `buf` after the recursive call is load-bearing, not
+ * decoration: without it both gcc and clang at -O2 rewrite
+ * `recurse(d + 1)` into a sibling call (`jmp recurse`) and drop the
+ * 128-byte frame entirely, so the stack never grows, the guard page is
+ * never touched, and the goro spins forever — ui_Run() never returns
+ * and the test hangs (and drags `make test` down with it).  Keeping a
+ * live buffer across the call forces a real `call` with a real frame.
+ */
 
 static void
 recurse(volatile int d)
 {
     volatile char buf[128];
-    (void)buf;
+    buf[0] = (char)d;
     recurse(d + 1);
+    buf[1] = buf[0];
 }
 
 static void
