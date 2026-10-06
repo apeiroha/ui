@@ -23,6 +23,10 @@ TOOLCHAIN ?= clang
 BUILD    ?= debug
 STD      ?= c23
 
+# 每个测试目标的运行超时（秒）。超时后 timeout 返回 124，make 记为失败，
+# 这样任何单个测试挂死都不会把 `make test` 拖成无限等待。
+TEST_TIMEOUT ?= 60
+
 # 禁用 make 内置隐含规则（避免 .iroha.c ↔ .iroha 循环依赖）
 MAKEFLAGS += -r
 
@@ -111,38 +115,38 @@ ifneq ($(STRIP),no)
 endif
 
 test-ui: $(BUILD_DIR)/test_ui
-	./$(BUILD_DIR)/test_ui
+	timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_ui
 
 $(BUILD_DIR)/test_c8_race: $(TEST_C8_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
 	$(CC) $(UI_CFLAGS) -I. -o $@ $^ $(LDFLAGS) $(_LIB)
 
 test-c8-race: $(BUILD_DIR)/test_c8_race
-	./$(BUILD_DIR)/test_c8_race
+	timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_c8_race
 
 $(BUILD_DIR)/test_p0: $(TEST_P0_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
 	$(CC) $(UI_CFLAGS) -I. -o $@ $^ $(LDFLAGS) $(_LIB)
 
 test-p0: $(BUILD_DIR)/test_p0
-	./$(BUILD_DIR)/test_p0
+	timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_p0
 
 $(BUILD_DIR)/test_p0_asan: $(TEST_P0_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
 	$(CC) -O1 -g -fsanitize=address -fno-omit-frame-pointer -D_GNU_SOURCE \
 	  $(_CFLAGS_COMMON) -I. -o $@ $^ $(_PIE) $(_LIB) -fsanitize=address
 
 test-p0-asan: $(BUILD_DIR)/test_p0_asan
-	ASAN_OPTIONS=abort_on_error=1:halt_on_error=1 ./$(BUILD_DIR)/test_p0_asan
+	ASAN_OPTIONS=abort_on_error=1:halt_on_error=1 timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_p0_asan
 
 $(BUILD_DIR)/test_udp_echo: $(TEST_UDP_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
 	$(CC) $(UI_CFLAGS) -I. -o $@ $^ $(LDFLAGS) $(_LIB)
 
 test-udp-echo: $(BUILD_DIR)/test_udp_echo
-	./$(BUILD_DIR)/test_udp_echo
+	timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_udp_echo
 
 $(BUILD_DIR)/test_sched_iopark: $(TEST_IOPARK_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
 	$(CC) $(UI_CFLAGS) -I. -o $@ $^ $(LDFLAGS) $(_LIB)
 
 test-sched-iopark: $(BUILD_DIR)/test_sched_iopark
-	./$(BUILD_DIR)/test_sched_iopark
+	timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_sched_iopark
 
 TEST_SPAWN_STEAL_SRC = tests/test_spawn_steal.c
 
@@ -150,7 +154,7 @@ $(BUILD_DIR)/test_spawn_steal: $(TEST_SPAWN_STEAL_SRC) $(UI_SRC) $(UI_ASM) $(BUI
 	$(CC) $(UI_CFLAGS) -I. -o $@ $^ $(LDFLAGS) $(_LIB)
 
 test-spawn-steal: $(BUILD_DIR)/test_spawn_steal
-	./$(BUILD_DIR)/test_spawn_steal
+	timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_spawn_steal
 
 TEST_LIFO_SLOT_SRC = tests/test_lifo_slot.c
 
@@ -158,13 +162,13 @@ $(BUILD_DIR)/test_lifo_slot: $(TEST_LIFO_SLOT_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_D
 	$(CC) $(UI_CFLAGS) -I. -o $@ $^ $(LDFLAGS) $(_LIB)
 
 test-lifo-slot: $(BUILD_DIR)/test_lifo_slot
-	./$(BUILD_DIR)/test_lifo_slot
+	timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_lifo_slot
 
 $(BUILD_DIR)/test_stack_overflow: $(TEST_OVERFLOW_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
 	$(CC) $(UI_CFLAGS) -I. -o $@ $^ $(LDFLAGS) $(_LIB)
 
 test-stack-overflow: $(BUILD_DIR)/test_stack_overflow
-	@out=$$(./$(BUILD_DIR)/test_stack_overflow 2>&1); rc=$$?; \
+	@out=$$(timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_stack_overflow 2>&1); rc=$$?; \
 	  echo "$$out" | grep -q "ui stack overflow: exceeded 8MB limit" && \
 	  [ "$$rc" -eq 1 ] && \
 	  echo "  TEST: 8MB overflow clean report (guard page) ... PASS" || \
@@ -176,7 +180,7 @@ $(BUILD_DIR)/test_idle_wait: $(TEST_IDLEWAIT_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DI
 	$(CC) $(UI_CFLAGS) -I. -o $@ $^ $(LDFLAGS) $(_LIB)
 
 test-idle-wait: $(BUILD_DIR)/test_idle_wait
-	./$(BUILD_DIR)/test_idle_wait
+	timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_idle_wait
 
 # ── Benchmarks ──
 $(BUILD_DIR)/bench_ui: tests/bench_ui.c $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
