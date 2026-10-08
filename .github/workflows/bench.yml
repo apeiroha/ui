@@ -6,6 +6,11 @@ on:
   schedule:
     - cron: "30 3 * * *"
   workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch or tag to benchmark (recorded as run.ref)'
+        required: true
+        default: 'main'
 
 permissions:
   contents: write
@@ -20,6 +25,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Manual runs target the requested ref so its run is tagged with
+          # that ref name; push/schedule keep the default (the pushed ref).
+          # Without this every run.ref would be "main" and the compare page
+          # could not tell branches apart.
+          ref: ${{ inputs.ref || github.ref_name }}
 
       - uses: ./.github/actions/setup-clang
 

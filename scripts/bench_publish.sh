@@ -35,6 +35,7 @@ else
 fi
 
 cp "$source_dir/index.html" "$pages_dir/index.html"
+cp "$source_dir/compare.html" "$pages_dir/compare.html"
 touch "$pages_dir/.nojekyll"
 node scripts/bench_merge.mjs "$run_json" "$pages_dir/data/bench.json"
 
