@@ -21,18 +21,24 @@ jobs:
           # installed by ./.github/actions/setup-gcc because it is the
           # first release that spells the standard `c23`; the runner's
           # default gcc 13 only accepts the older `c2x` alias.
+          #
+          # `uses` cannot take an expression -- matrix is not an allowed
+          # context there (it is allowed in if/with/run/name), so the two
+          # setup actions are both listed and gated on toolchain instead.
           - toolchain: clang
             std: c23
             cc: clang-19
-            setup: ./.github/actions/setup-clang
           - toolchain: gcc
             std: c23
             cc: x86_64-linux-gnu-gcc-14
-            setup: ./.github/actions/setup-gcc
     steps:
       - uses: actions/checkout@v4
 
-      - uses: ${{ matrix.setup }}
+      - uses: ./.github/actions/setup-clang
+        if: matrix.toolchain == 'clang'
+
+      - uses: ./.github/actions/setup-gcc
+        if: matrix.toolchain == 'gcc'
 
       - name: Build library
         run: make libui TOOLCHAIN=${{ matrix.toolchain }} STD=${{ matrix.std }} CC=${{ matrix.cc }}
