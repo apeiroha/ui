@@ -1,0 +1,24 @@
+name: setup-gcc
+description: Install gcc 14 (first release that spells the standard c23)
+
+runs:
+  using: composite
+  steps:
+    - name: Install gcc 14
+      shell: bash
+      run: |
+        # gcc 14 is the first release that accepts `-std=c23`; the
+        # ubuntu-24.04 runner ships gcc 13, which only knows the earlier
+        # `c2x` spelling. Installing gcc 14 lets this leg use the same
+        # standard name as the clang leg instead of being pinned to a
+        # legacy alias.
+        #
+        # Kept separate from setup-clang: the clang matrix leg has no use
+        # for gcc, and folding both into one action would make every
+        # clang run pay for the gcc install.
+        sudo apt-get update
+        sudo apt-get install -y software-properties-common
+        sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+        sudo apt-get update
+        sudo apt-get install -y gcc-14 g++-14
+        x86_64-linux-gnu-gcc-14 --version
