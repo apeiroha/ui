@@ -50,6 +50,20 @@ check "bench workflow can target a ref" \
 check "push and schedule runs still use the pushed ref" \
   "grep -q 'github.ref_name' .github/workflows/bench.yml"
 
+# Bench trigger wiring. Without a pull_request trigger every run.ref is
+# "main" (bench_collect reads GITHUB_REF_NAME, and push only fires on
+# main), so the compare page has a single selectable ref and cannot
+# compare anything. GITHUB_REF_NAME is "<pr_number>/merge" for a PR, so
+# the checkout must prefer github.head_ref to get a real branch name.
+check "bench runs on pull_request" \
+  "grep -qE '^  pull_request:' .github/workflows/bench.yml"
+check "checkout prefers the PR head branch over the merge ref" \
+  "grep -q 'inputs.ref || github.head_ref || github.ref_name' .github/workflows/bench.yml"
+check "concurrency group is per-ref, not global" \
+  "grep -q 'group: bench-pages-.*github.event.pull_request.head.ref' .github/workflows/bench.yml"
+check "fork PRs skip the gh-pages publish" \
+  "grep -q 'head.repo.full_name == github.repository' .github/workflows/bench.yml"
+
 # The tracking page must not change in this branch.
 if git diff --quiet main -- bench/index.html; then
   echo "  PASS  bench/index.html unchanged (tracking page untouched)"

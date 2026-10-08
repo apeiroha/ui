@@ -3,6 +3,9 @@ name: Bench
 on:
   push:
     branches: [ main ]
+  pull_request:
+    branches: [ main ]
+    types: [ opened, synchronize, reopened ]
   schedule:
     - cron: "30 3 * * *"
   workflow_dispatch:
@@ -16,7 +19,11 @@ permissions:
   contents: write
 
 concurrency:
-  group: bench-pages
+  # Per-ref, not one global group: a shared group with cancel-in-progress
+  # would let a PR's bench cancel main's mid-flight (and vice versa), which
+  # silently drops runs. Per-ref still collapses the rapid successive pushes
+  # on one branch, which is the case that actually matters.
+  group: bench-pages-${{ github.event.pull_request.head.ref || inputs.ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -26,11 +33,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Manual runs target the requested ref so its run is tagged with
-          # that ref name; push/schedule keep the default (the pushed ref).
-          # Without this every run.ref would be "main" and the compare page
-          # could not tell branches apart.
-          ref: ${{ inputs.ref || github.ref_name }}
+          # Which ref to benchmark, and what to label the run with, differ by
+          # event and that difference is load-bearing:
+          #   workflow_dispatch -> the requested input
+          #   pull_request      -> github.head_ref, the source branch.
+          #     GITHUB_REF_NAME is "<pr_number>/merge" here, so bench_collect
+          #     would file every PR under a per-PR throwaway name and the
+          #     compare page could never group by branch. github.head_ref is
+          #     the only field that is actually the branch name.
+          #   push / schedule   -> the pushed ref, i.e. main.
+          ref: ${{ inputs.ref || github.head_ref || github.ref_name }}
 
       - uses: ./.github/actions/setup-clang
 
@@ -43,7 +55,17 @@ jobs:
           BUILD: release
         run: node scripts/bench_collect.mjs --bin-dir build --iters 3 --attempts 8 --out bench-output.json
 
+      # Fork PRs get a read-only GITHUB_TOKEN, so the gh-pages push below
+      # cannot succeed. Skip the publish rather than fail the whole job; the
+      # benchmark itself still runs, so the numbers are visible in the job log.
       - name: Publish dashboard to gh-pages
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash scripts/bench_publish.sh bench-output.json
+
+      - name: Report fork PR (publish skipped)
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "::notice title=Bench (fork PR)::run.ref=${{ github.head_ref }}" \
+               "— benchmark ran, but publishing to gh-pages is skipped for fork PRs"
