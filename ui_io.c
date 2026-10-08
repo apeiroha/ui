@@ -22,6 +22,13 @@
 #define UI_URING_ENTRIES 1024
 #define UI_IO_TIMEOUT_MS 5000
 
+/* ENOMEM from io_uring_setup is a machine-wide RLIMIT_MEMLOCK quota
+ * that clears within milliseconds under load, so a short bounded retry
+ * with backoff is worth more than giving up on the ring entirely --
+ * every I/O op on that vCPU degrades to a blocking syscall without it. */
+#define UI_RING_SETUP_RETRIES    3
+#define UI_RING_SETUP_BACKOFF_MS 1
+
 /* Buffer ring defaults */
 #define UI_BUF_RING_COUNT    256
 #define UI_BUF_RING_BUF_SIZE 2048
@@ -71,32 +78,88 @@ ui_uring_enter(int ring_fd, unsigned to_submit, unsigned min_complete,
                         min_complete, flags, NULL, 0);
 }
 
+/* Back off between io_uring_setup retries. Must not touch the scheduler
+ * (a plain blocking sleep here is fine: this runs before the vCPU has
+ * any goro of its own, during ring creation). */
+static void
+ui_ring_backoff(void)
+{
+    struct timespec ts = {
+        .tv_sec  = 0,
+        .tv_nsec = (long)UI_RING_SETUP_BACKOFF_MS * 1000000L,
+    };
+    while (nanosleep(&ts, &ts) < 0 && errno == EINTR)
+        ;
+}
+
+/* Test hook: force io_uring_setup to fail, so tests can exercise the
+ * degraded-path fallbacks without needing to exhaust RLIMIT_MEMLOCK.
+ * Only consulted in ui_vcpu_ensure_ring; unset (the normal case) costs
+ * one getenv per ring creation, which happens once per vCPU. */
+static int
+ui_ring_setup_disabled(void)
+{
+    static int cached = -1;
+    if (cached < 0)
+    {
+        const char *e = getenv("UI_TEST_NO_RING");
+        cached = (e && *e && atoi(e) != 0) ? 1 : 0;
+    }
+    return cached;
+}
+
 int
 ui_vcpu_ensure_ring(ui_vCPU *v)
 {
     if (v->ring_fd >= 0)
         return 0;
+    if (ui_ring_setup_disabled())
+        return -1;
 
     struct io_uring_params p;
-    memset(&p, 0, sizeof(p));
-    /* Each vCPU is the sole issuer of its ring. DEFER_TASKRUN defers
-     * completion processing to explicit io_uring_enter(GETEVENTS) calls,
-     * eliminating kernel IPIs and improving cache locality. */
-    p.flags = IORING_SETUP_SINGLE_ISSUER |
-              IORING_SETUP_DEFER_TASKRUN |
-              IORING_SETUP_COOP_TASKRUN |
-              IORING_SETUP_NO_SQARRAY;
+    int last_errno = 0;
 
-    v->ring_fd = ui_uring_setup(UI_URING_ENTRIES, &p);
-    if (v->ring_fd < 0)
+    for (int attempt = 0; attempt <= UI_RING_SETUP_RETRIES; attempt++)
     {
-        /* Fallback: kernel too old for the flags above */
+        if (attempt > 0)
+            ui_ring_backoff();
+
         memset(&p, 0, sizeof(p));
-        p.flags = 0;
+        /* Each vCPU is the sole issuer of its ring. DEFER_TASKRUN defers
+         * completion processing to explicit io_uring_enter(GETEVENTS) calls,
+         * eliminating kernel IPIs and improving cache locality. */
+        p.flags = IORING_SETUP_SINGLE_ISSUER |
+                  IORING_SETUP_DEFER_TASKRUN |
+                  IORING_SETUP_COOP_TASKRUN |
+                  IORING_SETUP_NO_SQARRAY;
+
         v->ring_fd = ui_uring_setup(UI_URING_ENTRIES, &p);
+        if (v->ring_fd < 0)
+        {
+            /* Fallback: kernel too old for the flags above */
+            memset(&p, 0, sizeof(p));
+            p.flags = 0;
+            v->ring_fd = ui_uring_setup(UI_URING_ENTRIES, &p);
+        }
+        if (v->ring_fd >= 0)
+            break;
+
+        last_errno = errno;
+
+        /* Retry only quota-transient failures. io_uring_setup charges the
+         * ring against RLIMIT_MEMLOCK (accounting in __io_account_mem), and
+         * that quota is per-uid across the whole machine with delayed
+         * release, so ENOMEM/ENOSPC routinely clear within milliseconds
+         * under load. EINVAL/EPERM are deterministic (unsupported kernel,
+         * seccomp) -- retrying those just burns wall-clock at startup. */
+        if (last_errno != ENOMEM && last_errno != ENOSPC)
+            return -1;
     }
     if (v->ring_fd < 0)
+    {
+        errno = last_errno;
         return -1;
+    }
 
     v->no_sq_array = (p.flags & IORING_SETUP_NO_SQARRAY) != 0;
 
@@ -745,15 +808,49 @@ ui_RecvMsg(int fd, struct msghdr *msg, int flags)
     return ui_io_submit_and_wait(v, sqe);
 }
 
+/* Probe readiness on `fd` without the io_uring ring.
+ *
+ * MUST NOT block. This is the only POSIX fallback in this file that
+ * used to wait forever (poll(..., -1)), which wedged the whole vCPU
+ * thread inside poll() with no way for the scheduler to preempt it:
+ * ui_Run's pthread_join never returned. The caller's O_NONBLOCK does
+ * not help -- poll()'s blocking is governed by its own timeout
+ * argument, not the fd's flags.
+ *
+ * Report readiness and let the caller park through the scheduler
+ * instead, which is what ui_Read/ui_Write already do when the ring is
+ * missing (they return EAGAIN from a plain read()). Callers treat a
+ * negative return as "give up" -- sana/src/net/conn.c does
+ * `if (ui_PollAdd(fd, POLLIN) < 0) return -1;` -- so -1 is already a
+ * handled outcome everywhere this is called. */
+static int
+ui_PollAdd_fallback(int fd, unsigned events)
+{
+    struct pollfd pfd = { .fd = fd, .events = (short)events };
+    int r = poll(&pfd, 1, 0);
+    if (r < 0) return -1;
+    if (r == 0) { errno = EAGAIN; return -1; }
+    return 0;
+}
+
 int
 ui_PollAdd(int fd, unsigned events)
 {
     ui_vCPU *v = ui_this_vcpu;
-    if (!v || !v->current) return poll(&(struct pollfd){.fd = fd, .events = (short)events}, 1, -1);
-    if (ui_vcpu_ensure_ring(v) < 0) return poll(&(struct pollfd){.fd = fd, .events = (short)events}, 1, -1);
+    if (!v || !v->current) return ui_PollAdd_fallback(fd, events);
+    if (ui_vcpu_ensure_ring(v) < 0) return ui_PollAdd_fallback(fd, events);
 
+    /* A full SQ is not a failure condition: per io_uring_get_sqe(3),
+     * "the SQ ring is currently full and entries must be submitted for
+     * processing before new ones can get allocated". Push the pending
+     * batch and retry before concluding anything. */
     struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
-    if (!sqe) return poll(&(struct pollfd){.fd = fd, .events = (short)events}, 1, -1);
+    if (!sqe)
+    {
+        ui_uring_submit(v);
+        sqe = ui_uring_get_sqe(v);
+    }
+    if (!sqe) return ui_PollAdd_fallback(fd, events);
 
     sqe->opcode = IORING_OP_POLL_ADD;
     sqe->fd = fd;
