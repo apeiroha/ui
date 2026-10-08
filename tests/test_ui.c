@@ -1069,7 +1069,16 @@ static void test_pinto_rebind(void) {
     atomic_store(&pin_start_vcpu, -1);
     atomic_store(&pin_wake_vcpu, -1);
     atomic_store(&pin_done, 0);
-    ui_Go(pin_worker);
+    /* ui_GoOn, not ui_Go. Both spawns happen before ui_Run, so
+     * ui_spawn_enqueue files them at target 0 -- but once ui_Run starts,
+     * an idle vCPU 1 may steal the worker before it ever runs, and then
+     * it starts on vCPU 1 and the start assertion below fails on timing
+     * alone. That showed up as an intermittent gcc-only CI failure
+     * ("pin worker should start on vCPU 0", reproduced 1-in-30 locally).
+     * ui_GoOn sets `pinned`, which ui_steal_work honours, so the start
+     * vCPU is the requested one and this test measures PinTo's
+     * rebinding rather than the scheduler's placement choice. */
+    ui_GoOn(pin_worker, 0);
     ui_Go(pin_sender);
     ui_Run();
     ui_ChanFree(pin_ch);

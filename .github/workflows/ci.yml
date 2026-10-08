@@ -17,19 +17,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # clang 19 matches the development toolchain.  gcc 13 (Ubuntu
-          # 24.04) still spells the C standard `c2x` (same feature set
-          # for this code).
+          # clang 19 matches the development toolchain.  gcc 14 is
+          # installed by ./.github/actions/setup-gcc because it is the
+          # first release that spells the standard `c23`; the runner's
+          # default gcc 13 only accepts the older `c2x` alias.
           - toolchain: clang
             std: c23
             cc: clang-19
+            setup: ./.github/actions/setup-clang
           - toolchain: gcc
-            std: c2x
-            cc: x86_64-linux-gnu-gcc
+            std: c23
+            cc: x86_64-linux-gnu-gcc-14
+            setup: ./.github/actions/setup-gcc
     steps:
       - uses: actions/checkout@v4
 
-      - uses: ./.github/actions/setup-clang
+      - uses: ${{ matrix.setup }}
 
       - name: Build library
         run: make libui TOOLCHAIN=${{ matrix.toolchain }} STD=${{ matrix.std }} CC=${{ matrix.cc }}
