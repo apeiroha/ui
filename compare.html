@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ui (うい) — benchmark branch compare</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --fg: #e6edf3;
+    --muted: #8b949e;
+    --good: #3fb950;
+    --bad: #f85149;
+    --accent: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    padding: 24px 28px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  h1 { margin: 0 0 4px; font-size: 20px; font-weight: 600; }
+  h1 a { color: var(--fg); text-decoration: none; }
+  h2 { font-size: 14px; font-weight: 600; margin: 24px 0 10px; color: var(--muted);
+       text-transform: uppercase; letter-spacing: .04em; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .meta a { color: var(--accent); }
+  main { padding: 20px 28px 60px; }
+  .controls {
+    display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px 16px; margin-bottom: 8px;
+  }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { color: var(--muted); font-size: 12px; }
+  select {
+    background: var(--bg); color: var(--fg); font: inherit;
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 10px; min-width: 220px;
+  }
+  .modes { display: flex; gap: 8px; flex-wrap: wrap; }
+  .mode {
+    background: var(--panel); color: var(--muted);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 14px; cursor: pointer; font: inherit;
+  }
+  .mode.active { color: var(--fg); border-color: var(--accent); }
+  .hint { color: var(--muted); font-size: 12px; margin: 0 0 18px; }
+  table {
+    width: 100%; border-collapse: collapse;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; overflow: hidden;
+  }
+  th, td { padding: 7px 12px; text-align: right; border-bottom: 1px solid var(--border); }
+  th:first-child, td:first-child { text-align: left; }
+  thead th { color: var(--muted); font-weight: 600; font-size: 12px; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: none; }
+  td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.metric { color: var(--fg); }
+  .delta.good { color: var(--good); }
+  .delta.bad { color: var(--bad); }
+  .delta.flat, .na { color: var(--muted); }
+  .na { font-style: italic; }
+  code { background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+        padding: 1px 5px; font-size: 12px; }
+  #status { color: var(--muted); padding: 40px 0; }
+  .commit { color: var(--muted); font-size: 11px; margin-left: 6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1><a href="https://github.com/apeiroha/ui">ui (うい)</a> — benchmark branch compare</h1>
+  <div class="meta"><a href="index.html">← tracking</a> · <span id="meta">loading…</span></div>
+</header>
+<main>
+  <div class="controls">
+    <div class="field">
+      <label for="refA">Ref A (baseline)</label>
+      <select id="refA"></select>
+    </div>
+    <div class="field">
+      <label for="refB">Ref B (compare)</label>
+      <select id="refB"></select>
+    </div>
+    <div class="field">
+      <label>Selection</label>
+      <div class="modes" id="modes">
+        <button class="mode active" data-mode="latest">latest per ref</button>
+        <button class="mode" data-mode="aligned">time-aligned</button>
+      </div>
+    </div>
+  </div>
+  <p class="hint" id="hint"></p>
+  <div id="status">loading…</div>
+  <div id="tables"></div>
+</main>
+<script>
+/* Branch comparison over the same dataset the tracking page uses.
+ *
+ * Two selection modes:
+ *   latest  — each ref's most recent run. Answers "which branch is
+ *             faster right now", but says nothing about when.
+ *   aligned — each side's run closest to the shared midpoint of the two
+ *             refs' runs, i.e. as close in time as the data allows.
+ *             Answers "how did these compare when both were measured",
+ *             but the two runs sit on different code baselines, so the
+ *             short commits are shown for every group: if they differ by
+ *             many commits the delta reflects the whole branch, not one
+ *             change.
+ *
+ * All values are ns/op, lower is better (same convention as the
+ * tracking page, which marks pct < 0 as "good"). The header says so.
+ */
+const state = { data: null, refs: [], mode: 'latest' };
+const $ = id => document.getElementById(id);
+
+function fmtDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d)) return String(iso);
+  return d.toISOString().replace('T', ' ').replace(/\..*$/, '').replace('Z', 'Z');
+}
+
+function runsOf(ref) {
+  return (state.data.runs || []).filter(r => r && r.ref === ref);
+}
+
+function metricNames(runs) {
+  const seen = [];
+  for (const run of runs) {
+    for (const g of Object.keys((run && run.metrics) || {})) {
+      if (!seen.includes(g)) seen.push(g);
+    }
+  }
+  return seen;
+}
+
+function metricTable(group, rowsA, rowsB, labelA, labelB) {
+  /* Union of metric names, first-seen order. Branches drift: a metric
+   * added on one ref only must read "n/a", never 0. */
+  const names = [];
+  for (const rows of [rowsA, rowsB]) {
+    for (const r of rows) {
+      const g = (r.metrics || {})[group] || {};
+      for (const n of Object.keys(g)) if (!names.includes(n)) names.push(n);
+    }
+  }
+  if (names.length === 0) return null;
+
+  const index = rows => {
+    const map = new Map();
+    for (const r of rows) map.set(r, ((r.metrics || {})[group]) || {});
+    return map;
+  };
+  const mapA = index(rowsA), mapB = index(rowsB);
+
+  const h2 = document.createElement('h2');
+  h2.textContent = group;
+  const t = document.createElement('table');
+  t.innerHTML =
+    '<thead><tr><th>metric (ns/op, ↓ better)</th>' +
+    '<th>' + labelA + '</th><th>' + labelB + '</th><th>Δ</th><th>Δ%</th></tr></thead>';
+  const tb = document.createElement('tbody');
+
+  for (const name of names) {
+    const a = mapA.has(rowsA[0]) ? mapA.get(rowsA[0])[name] : undefined;
+    const b = mapB.has(rowsB[0]) ? mapB.get(rowsB[0])[name] : undefined;
+    const tr = document.createElement('tr');
+
+    const tdName = document.createElement('td');
+    tdName.className = 'metric';
+    tdName.textContent = name;
+    tr.appendChild(tdName);
+
+    const cell = v => {
+      const td = document.createElement('td');
+      td.className = 'num';
+      if (v === undefined || v === null) {
+        td.className = 'na';
+        td.textContent = 'n/a';
+      } else {
+        td.textContent = v.toLocaleString();
+      }
+      return td;
+    };
+    tr.appendChild(cell(a));
+    tr.appendChild(cell(b));
+
+    const tdD = document.createElement('td');
+    const tdP = document.createElement('td');
+    tdD.className = 'num';
+    tdP.className = 'num';
+    if (typeof a === 'number' && typeof b === 'number') {
+      const d = b - a;
+      const pct = a === 0 ? 0 : (d / a) * 100;
+      const cls = Math.abs(pct) < 0.5 ? 'flat' : (pct < 0 ? 'good' : 'bad');
+      tdD.className = 'num ' + cls;
+      tdD.textContent = (d > 0 ? '+' : '') + d.toLocaleString();
+      tdP.className = 'num ' + cls;
+      tdP.textContent = (pct > 0 ? '+' : '') + pct.toFixed(1) + '%';
+    } else {
+      tdD.className = 'na';
+      tdD.textContent = '—';
+      tdP.className = 'na';
+      tdP.textContent = '—';
+    }
+    tr.appendChild(tdD);
+    tr.appendChild(tdP);
+    tb.appendChild(tr);
+  }
+  t.appendChild(tb);
+  const wrap = document.createDocumentFragment();
+  wrap.appendChild(h2);
+  wrap.appendChild(t);
+  return wrap;
+}
+
+function commitCell(run) {
+  if (!run) return '';
+  const s = run.short ? '<code>' + run.short + '</code>' : '';
+  const d = run.date ? ' ' + fmtDate(run.date) : '';
+  return '<span class="commit">' + s + d + '</span>';
+}
+
+function pickLatest(a, b) {
+  return [a[a.length - 1], b[b.length - 1]];
+}
+
+/* For each side, the run whose date is closest to the midpoint of the
+ * two refs' full date range. Independent per side: whichever run each
+ * ref had closest to the shared window. */
+function pickAligned(a, b) {
+  const all = a.concat(b).map(r => new Date(r.date).getTime()).filter(t => !isNaN(t));
+  if (all.length === 0) return pickLatest(a, b);
+  const mid = (Math.min.apply(null, all) + Math.max.apply(null, all)) / 2;
+  const nearest = runs => {
+    let best = null, bestD = Infinity;
+    for (const r of runs) {
+      const t = new Date(r.date).getTime();
+      if (isNaN(t)) continue;
+      const d = Math.abs(t - mid);
+      if (d < bestD) { bestD = d; best = r; }
+    }
+    return best;
+  };
+  return [nearest(a), nearest(b)];
+}
+
+function render() {
+  const refA = $('refA').value, refB = $('refB').value;
+  const a = runsOf(refA), b = runsOf(refB);
+  $('tables').textContent = '';
+  $('status').textContent = '';
+
+  if (!refA || !refB) {
+    $('status').textContent = 'no benchmark runs recorded yet — run the Bench workflow';
+    $('hint').textContent = '';
+    return;
+  }
+  if (refA === refB) {
+    $('status').textContent = 'pick two different refs to compare';
+    $('hint').textContent = '';
+    return;
+  }
+  if (a.length === 0 || b.length === 0) {
+    const empty = a.length === 0 ? refA : refB;
+    $('status').textContent =
+      'ref "' + empty + '" has no recorded run — trigger Bench with ref=' + empty;
+    $('hint').textContent = '';
+    return;
+  }
+
+  const [runA, runB] = state.mode === 'aligned' ? pickAligned(a, b) : pickLatest(a, b);
+
+  if (state.mode === 'aligned') {
+    $('hint').innerHTML =
+      'time-aligned: each side is the run nearest the shared midpoint of both refs’ history. ' +
+      'Baselines may differ — compare the commits below before reading the deltas.';
+  } else {
+    $('hint').textContent =
+      'latest per ref: each side is that ref’s most recent run. ' +
+      'Not necessarily measured at the same time.';
+  }
+
+  const labelA = refA + commitCell(runA);
+  const labelB = refB + commitCell(runB);
+
+  const groups = metricNames([runA, runB]);
+  let rendered = 0;
+  for (const g of groups) {
+    const frag = metricTable(g, [runA], [runB], labelA, labelB);
+    if (frag) { $('tables').appendChild(frag); rendered++; }
+  }
+  if (rendered === 0) $('status').textContent = 'no metrics recorded for these refs';
+}
+
+function fillSelects() {
+  const refs = [];
+  for (const r of (state.data.runs || [])) {
+    if (r && r.ref && !refs.includes(r.ref)) refs.push(r.ref);
+  }
+  refs.sort();
+  state.refs = refs;
+  for (const [id, def] of [['refA', 0], ['refB', 1]]) {
+    const sel = $(id);
+    sel.textContent = '';
+    refs.forEach((r, i) => {
+      const o = document.createElement('option');
+      o.value = r; o.textContent = r;
+      sel.appendChild(o);
+    });
+    if (refs.length > def) sel.selectedIndex = def;
+    sel.onchange = render;
+  }
+}
+
+async function boot() {
+  try {
+    const res = await fetch('data/bench.json', { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    state.data = await res.json();
+  } catch (e) {
+    $('status').textContent =
+      'No benchmark data published yet (' + e.message + '). Run the Bench workflow.';
+    $('meta').textContent = '';
+    return;
+  }
+  const runs = state.data.runs || [];
+  fillSelects();
+  $('meta').textContent = state.refs.length
+    ? runs.length + ' run(s), ' + state.refs.length + ' ref(s)'
+    : '';
+  render();
+
+  for (const btn of document.querySelectorAll('.mode')) {
+    btn.onclick = () => {
+      for (const other of document.querySelectorAll('.mode'))
+        other.classList.toggle('active', other === btn);
+      state.mode = btn.dataset.mode;
+      render();
+    };
+  }
+}
+
+boot();
+</script>
+</body>
+</html>
