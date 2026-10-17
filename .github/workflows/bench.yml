@@ -14,6 +14,10 @@ on:
         description: 'Branch or tag to benchmark (recorded as run.ref)'
         required: true
         default: 'main'
+      base_ref:
+        description: 'Baseline ref for same-machine A/B (blank = none)'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -31,29 +35,120 @@ jobs:
     name: collect + publish
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # Which two refs to measure, and what to label the run with, come
+      # from the event. The pair is always "head" (the new code) vs
+      # "base" (what it should be compared against), measured on this one
+      # runner so machine drift is shared:
+      #   pull_request -> head = the PR head, base = the merge base
+      #     (pull_request.base.sha), so the delta isolates the PR itself.
+      #   push         -> head = the pushed commit, base = the previous
+      #     main tip (event.before), i.e. this push vs the last one.
+      #   schedule / dispatch -> no natural base; single run unless the
+      #     dispatch input supplies one.
+      - name: Resolve head/base for this event
+        id: ab
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+          INPUT_REF: ${{ inputs.ref }}
+          INPUT_BASE: ${{ inputs.base_ref }}
+          REF_NAME: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          zero=0000000000000000000000000000000000000000
+          case "$EVENT" in
+            pull_request)
+              h_ref=$PR_HEAD_REF; h_repo=$PR_HEAD_REPO; h_checkout=$PR_HEAD_SHA
+              b_ref=$PR_BASE_REF; b_sha=$PR_BASE_SHA ;;
+            push)
+              h_ref=$REF_NAME; h_repo=$REPO; h_checkout=$SHA
+              b_ref=$REF_NAME; b_sha=$BEFORE ;;
+            *)
+              # A dispatch can target any ref; github.sha is the tip of the
+              # branch that *dispatched*, not necessarily of inputs.ref, so
+              # check out the requested ref by name and resolve its commit
+              # after checkout.
+              h_ref=${INPUT_REF:-$REF_NAME}; h_repo=$REPO; h_checkout=${INPUT_REF:-$REF_NAME}
+              b_ref=$INPUT_BASE; b_sha="" ;;
+          esac
+          # A baseline is only usable when it names a real commit: the first
+          # push to a branch and force pushes report an all-zero `before`.
+          if [[ ! "$b_sha" =~ ^[0-9a-f]{40}$ || "$b_sha" == "$zero" ]]; then
+            b_ref=""; b_sha=""
+          fi
+          {
+            echo "head_ref=$h_ref"
+            echo "head_repo=$h_repo"
+            echo "head_checkout=$h_checkout"
+            echo "base_ref=$b_ref"
+            echo "base_sha=$b_sha"
+            echo "has_base=$([[ -n "$b_sha" ]] && echo 1 || echo 0)"
+          } >> "$GITHUB_OUTPUT"
+
+      # Head is checked out at the workspace root so the local setup-clang
+      # action resolves; the baseline goes to a side checkout. `repository`
+      # makes the PR head resolvable for fork PRs too.
+      - name: Checkout head
+        uses: actions/checkout@v4
         with:
-          # Which ref to benchmark, and what to label the run with, differ by
-          # event and that difference is load-bearing:
-          #   workflow_dispatch -> the requested input
-          #   pull_request      -> github.head_ref, the source branch.
-          #     GITHUB_REF_NAME is "<pr_number>/merge" here, so bench_collect
-          #     would file every PR under a per-PR throwaway name and the
-          #     compare page could never group by branch. github.head_ref is
-          #     the only field that is actually the branch name.
-          #   push / schedule   -> the pushed ref, i.e. main.
-          ref: ${{ inputs.ref || github.head_ref || github.ref_name }}
+          repository: ${{ steps.ab.outputs.head_repo }}
+          ref: ${{ steps.ab.outputs.head_checkout }}
+
+      # The record's head sha is whatever actually landed in the workspace,
+      # which is exact for PR/push and resolves the dispatch ref's tip too.
+      - name: Resolve checked-out head commit
+        id: head
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout baseline
+        id: base
+        if: steps.ab.outputs.has_base == '1'
+        # A force-pushed or GC'd baseline can be unreachable; the run is
+        # still useful without it, so a failed baseline checkout degrades
+        # to a single-ref run instead of failing the job.
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ab.outputs.base_sha }}
+          path: base-src
 
       - uses: ./.github/actions/setup-clang
 
-      - name: Build release benchmarks (clang 19)
+      - name: Build head release benchmarks (clang 19)
+        run: make bench-build BUILD=release TOOLCHAIN=clang CC=clang-19
+
+      - name: Build baseline release benchmarks (clang 19)
+        id: basebuild
+        if: steps.base.outcome == 'success'
+        # An old baseline that no longer builds must not break the head
+        # run; fall back to a single-ref measurement instead.
+        continue-on-error: true
+        working-directory: base-src
         run: make bench-build BUILD=release TOOLCHAIN=clang CC=clang-19
 
       - name: Collect benchmark run
         env:
           TOOLCHAIN: clang
           BUILD: release
-        run: node scripts/bench_collect.mjs --bin-dir build --iters 3 --attempts 8 --out bench-output.json
+          HEAD_REF: ${{ steps.ab.outputs.head_ref }}
+          HEAD_SHA: ${{ steps.head.outputs.sha }}
+          BASE_REF: ${{ steps.ab.outputs.base_ref }}
+          BASE_SHA: ${{ steps.ab.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          args=(--bin-dir build --iters 3 --attempts 8 --out bench-output.json
+                --ref "$HEAD_REF" --sha "$HEAD_SHA")
+          if [[ "${{ steps.basebuild.outcome }}" == "success" && -d base-src/build ]]; then
+            args+=(--base-bin-dir base-src/build --base-ref "$BASE_REF" --base-sha "$BASE_SHA")
+          fi
+          node scripts/bench_collect.mjs "${args[@]}"
 
       # Fork PRs get a read-only GITHUB_TOKEN, so the gh-pages push below
       # cannot succeed. Skip the publish rather than fail the whole job; the
@@ -67,5 +162,5 @@ jobs:
       - name: Report fork PR (publish skipped)
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
         run: |
-          echo "::notice title=Bench (fork PR)::run.ref=${{ github.head_ref }}" \
+          echo "::notice title=Bench (fork PR)::run.ref=${{ steps.ab.outputs.head_ref }}" \
                "— benchmark ran, but publishing to gh-pages is skipped for fork PRs"

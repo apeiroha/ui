@@ -81,19 +81,24 @@
 </header>
 <main>
   <div class="controls">
-    <div class="field">
+    <div class="field" id="fieldA">
       <label for="refA">Ref A (baseline)</label>
       <select id="refA"></select>
     </div>
-    <div class="field">
+    <div class="field" id="fieldB">
       <label for="refB">Ref B (compare)</label>
       <select id="refB"></select>
+    </div>
+    <div class="field" id="pairField" style="display:none">
+      <label for="pair">Same-machine pair (base ← head)</label>
+      <select id="pair"></select>
     </div>
     <div class="field">
       <label>Selection</label>
       <div class="modes" id="modes">
         <button class="mode active" data-mode="latest">latest per ref</button>
         <button class="mode" data-mode="aligned">time-aligned</button>
+        <button class="mode" data-mode="pair">same-machine pair</button>
       </div>
     </div>
   </div>
@@ -104,7 +109,7 @@
 <script>
 /* Branch comparison over the same dataset the tracking page uses.
  *
- * Two selection modes:
+ * Three selection modes:
  *   latest  — each ref's most recent run. Answers "which branch is
  *             faster right now", but says nothing about when.
  *   aligned — each side's run closest to the shared midpoint of the two
@@ -114,11 +119,17 @@
  *             short commits are shown for every group: if they differ by
  *             many commits the delta reflects the whole branch, not one
  *             change.
+ *   pair    — a single run that carries an embedded `base` measurement
+ *             (see scripts/bench_collect.mjs --base-bin-dir). Both sides
+ *             were built from different commits and run interleaved on
+ *             one runner, so the delta is same-machine and free of the
+ *             drift that makes the other two modes approximate. Used for
+ *             PR-vs-merge-base and main-vs-previous-main.
  *
  * All values are ns/op, lower is better (same convention as the
  * tracking page, which marks pct < 0 as "good"). The header says so.
  */
-const state = { data: null, refs: [], mode: 'latest' };
+const state = { data: null, refs: [], pairs: [], mode: 'latest' };
 const $ = id => document.getElementById(id);
 
 function fmtDate(iso) {
@@ -253,11 +264,44 @@ function pickAligned(a, b) {
   return [nearest(a), nearest(b)];
 }
 
+/* A pair is a run that embedded a base measurement: same two binaries,
+ * same machine, interleaved. Render the baseline against the head. */
+function renderPair() {
+  if (state.pairs.length === 0) {
+    $('status').textContent =
+      'no same-machine A/B run recorded yet — open a PR or push to main';
+    $('hint').textContent = '';
+    return;
+  }
+  const p = state.pairs[Number($('pair').value) || 0];
+  if (!p) { $('status').textContent = 'pick a pair'; return; }
+
+  const baseSide = { ref: p.base.ref, short: p.base.short, date: p.date, metrics: p.base.metrics };
+  const headSide = { ref: p.ref, short: p.short, date: p.date, metrics: p.metrics };
+
+  $('hint').textContent =
+    'same-machine pair: base and head were built from different commits and run ' +
+    'interleaved on one runner, so the delta is not machine drift.';
+
+  const labelA = 'base ' + (p.base.ref || '') + commitCell(baseSide);
+  const labelB = 'head ' + (p.ref || '') + commitCell(headSide);
+
+  const groups = metricNames([baseSide, headSide]);
+  let rendered = 0;
+  for (const g of groups) {
+    const frag = metricTable(g, [baseSide], [headSide], labelA, labelB);
+    if (frag) { $('tables').appendChild(frag); rendered++; }
+  }
+  if (rendered === 0) $('status').textContent = 'no metrics recorded for this pair';
+}
+
 function render() {
-  const refA = $('refA').value, refB = $('refB').value;
-  const a = runsOf(refA), b = runsOf(refB);
   $('tables').textContent = '';
   $('status').textContent = '';
+  if (state.mode === 'pair') { renderPair(); return; }
+
+  const refA = $('refA').value, refB = $('refB').value;
+  const a = runsOf(refA), b = runsOf(refB);
 
   if (!refA || !refB) {
     $('status').textContent = 'no benchmark runs recorded yet — run the Bench workflow';
@@ -321,6 +365,33 @@ function fillSelects() {
   }
 }
 
+/* Runs that embedded a same-machine baseline, in history order. */
+function fillPairs() {
+  state.pairs = (state.data.runs || []).filter(r => r && r.base && r.base.metrics);
+  const sel = $('pair');
+  sel.textContent = '';
+  state.pairs.forEach((r, i) => {
+    const o = document.createElement('option');
+    o.value = String(i);
+    const head = r.ref + ' ' + (r.short || '');
+    const base = (r.base.ref || 'base') + ' ' + (r.base.short || '');
+    o.textContent = base + ' → ' + head + (r.date ? ' @ ' + fmtDate(r.date) : '');
+    sel.appendChild(o);
+  });
+  sel.onchange = render;
+}
+
+function setMode(mode) {
+  state.mode = mode;
+  for (const btn of document.querySelectorAll('.mode'))
+    btn.classList.toggle('active', btn.dataset.mode === mode);
+  const pairMode = mode === 'pair';
+  $('fieldA').style.display = pairMode ? 'none' : '';
+  $('fieldB').style.display = pairMode ? 'none' : '';
+  $('pairField').style.display = pairMode ? '' : 'none';
+  render();
+}
+
 async function boot() {
   try {
     const res = await fetch('data/bench.json', { cache: 'no-store' });
@@ -334,18 +405,14 @@ async function boot() {
   }
   const runs = state.data.runs || [];
   fillSelects();
+  fillPairs();
   $('meta').textContent = state.refs.length
-    ? runs.length + ' run(s), ' + state.refs.length + ' ref(s)'
+    ? runs.length + ' run(s), ' + state.refs.length + ' ref(s), ' + state.pairs.length + ' pair(s)'
     : '';
   render();
 
   for (const btn of document.querySelectorAll('.mode')) {
-    btn.onclick = () => {
-      for (const other of document.querySelectorAll('.mode'))
-        other.classList.toggle('active', other === btn);
-      state.mode = btn.dataset.mode;
-      render();
-    };
+    btn.onclick = () => setMode(btn.dataset.mode);
   }
 }
 

@@ -212,9 +212,12 @@ bench-ui-io: $(BUILD_DIR)/bench_ui_io
 # Build the benchmark binaries without running them (CI-friendly).
 bench-build: $(BUILD_DIR)/bench_ui $(BUILD_DIR)/bench_ui_io
 
-# Collect a benchmark record as JSON (min of 3 runs per metric).
+# Collect a benchmark record as JSON (min of 3 runs per metric). Set
+# BASE_DIR=<other build dir> to also measure that build on this machine
+# and attach it as the run's baseline (same-machine A/B); build it first.
 bench-json: $(BUILD_DIR)/bench_ui $(BUILD_DIR)/bench_ui_io
-	node scripts/bench_collect.mjs --bin-dir $(BUILD_DIR) --iters 3 --out bench-output.json
+	node scripts/bench_collect.mjs --bin-dir $(BUILD_DIR) --iters 3 --out bench-output.json \
+		$(if $(BASE_DIR),--base-bin-dir $(BASE_DIR),)
 
 # ── Perf profiling ──
 .PHONY: bench-ui-perf

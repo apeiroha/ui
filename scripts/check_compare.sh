@@ -33,6 +33,10 @@ check "compare page picks latest per ref" \
   "grep -q 'function pickLatest' bench/compare.html"
 check "compare page picks time-aligned" \
   "grep -q 'function pickAligned' bench/compare.html"
+check "compare page has a same-machine pair mode" \
+  "grep -q 'data-mode=\"pair\"' bench/compare.html"
+check "compare page discovers runs with an embedded base" \
+  "grep -q 'r.base && r.base.metrics' bench/compare.html"
 check "compare page renders absent metrics as n/a" \
   "grep -q \"'n/a'\" bench/compare.html"
 check "compare page states that lower ns/op is better" \
@@ -50,19 +54,40 @@ check "bench workflow can target a ref" \
 check "push and schedule runs still use the pushed ref" \
   "grep -q 'github.ref_name' .github/workflows/bench.yml"
 
-# Bench trigger wiring. Without a pull_request trigger every run.ref is
-# "main" (bench_collect reads GITHUB_REF_NAME, and push only fires on
-# main), so the compare page has a single selectable ref and cannot
-# compare anything. GITHUB_REF_NAME is "<pr_number>/merge" for a PR, so
-# the checkout must prefer github.head_ref to get a real branch name.
+# Bench trigger + same-machine A/B wiring. The workflow resolves a head
+# and a baseline from the event; the collector builds and runs both,
+# interleaved, on one runner. Without the pull_request trigger every
+# run.ref would be "main" (push only fires on main) and the compare page
+# could not compare anything.
 check "bench runs on pull_request" \
   "grep -qE '^  pull_request:' .github/workflows/bench.yml"
-check "checkout prefers the PR head branch over the merge ref" \
-  "grep -q 'inputs.ref || github.head_ref || github.ref_name' .github/workflows/bench.yml"
 check "concurrency group is per-ref, not global" \
   "grep -q 'group: bench-pages-.*github.event.pull_request.head.ref' .github/workflows/bench.yml"
 check "fork PRs skip the gh-pages publish" \
   "grep -q 'head.repo.full_name == github.repository' .github/workflows/bench.yml"
+
+# Event -> baseline mapping. PR compares against the merge base
+# (base.sha), main push against the previous tip (event.before), and the
+# head ref is taken from the event rather than GITHUB_REF_NAME, which is
+# "<pr>/merge" for a PR and would file every PR under a throwaway name.
+check "PR head ref comes from the event, not the merge ref" \
+  "grep -qF -- 'PR_HEAD_REF: \${{ github.event.pull_request.head.ref }}' .github/workflows/bench.yml"
+check "PR baseline is the merge base (base.sha)" \
+  "grep -qF -- 'PR_BASE_SHA: \${{ github.event.pull_request.base.sha }}' .github/workflows/bench.yml"
+check "main push baseline is event.before" \
+  "grep -qF -- 'BEFORE: \${{ github.event.before }}' .github/workflows/bench.yml"
+check "an all-zero baseline is dropped" \
+  "grep -qE 'zero=0{40}' .github/workflows/bench.yml"
+check "collector supports an interleaved baseline build" \
+  "grep -q 'base-bin-dir' scripts/bench_collect.mjs"
+check "collector interleaves head and base for a pair" \
+  "grep -q 'collectPair' scripts/bench_collect.mjs"
+check "workflow builds the baseline into base-src" \
+  "grep -q 'base-src/build' .github/workflows/bench.yml"
+check "workflow records the checked-out head commit" \
+  "grep -q 'steps.head.outputs.sha' .github/workflows/bench.yml"
+check "workflow labels the run with the head ref, not the merge ref" \
+  "grep -qF -- '--ref \"\$HEAD_REF\"' .github/workflows/bench.yml"
 
 # The tracking page must not change in this branch.
 if git diff --quiet main -- bench/index.html; then

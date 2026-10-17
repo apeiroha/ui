@@ -3,7 +3,9 @@
 // browser. bench/compare.html is a single static file, so its logic is
 // duplicated here in plain JS and asserted against a synthetic fixture.
 // Both sides must be changed together -- scripts/check_compare.mjs is
-// the testable spec for the pick/diff rules in bench/compare.html.
+// the testable spec for the pick/diff rules in bench/compare.html
+// (latest-per-ref, time-aligned, same-machine pair, metric union, n/a
+// for absent metrics, ns/op direction).
 
 import process from "node:process";
 
@@ -65,6 +67,18 @@ function refsOf(runs) {
   return refs.sort();
 }
 
+/* Same-machine pairs: runs that embedded a baseline measurement
+ * (bench_collect.mjs --base-bin-dir). The pair view renders run.base
+ * (baseline) against run itself (head). A plain run has no .base and is
+ * not a pair. */
+function pairRuns(runs) {
+  return runs.filter(r => r && r.base && r.base.metrics);
+}
+
+function pickPair(runs, i) {
+  return pairRuns(runs)[i] || null;
+}
+
 /* ── fixture ──────────────────────────────────────────────────────────
  * Three refs. main has three runs so "time-aligned" demonstrably picks
  * a non-latest one. feat omits one metric so the n/a path is exercised.
@@ -111,6 +125,29 @@ const featNew = {}, featMid = {};
   });
 }
 
+/* A same-machine pair: head and an embedded base. Some metrics faster in
+ * head, the rest identical, so both the good and flat verdicts are
+ * exercised. */
+function mkPair(runId, ref, short, date, head, baseRef, baseShort, baseVals) {
+  return {
+    id: runId, ref, short, date,
+    metrics: { bench_ui: head, bench_ui_io: { "ui_Read (always-available data)": 1468 } },
+    base: {
+      ref: baseRef, commit: baseShort, short: baseShort,
+      metrics: { bench_ui: baseVals, bench_ui_io: { "ui_Read (always-available data)": 1500 } },
+    },
+  };
+}
+
+const pairHead = {}, pairBase = {};
+{
+  const keys = Object.keys(BASE).filter(k => k !== DROP);
+  keys.forEach((k, i) => {
+    pairBase[k] = BASE[k];
+    pairHead[k] = i % 3 === 0 ? Math.round(BASE[k] * 0.8) : BASE[k];
+  });
+}
+
 const runs = [
   mk("gh-1", "main", "aaaaaaa1", "2026-10-01T03:30:00Z", BASE),
   mk("gh-2", "main", "bbbbbbb2", "2026-10-06T03:30:00Z", BASE),
@@ -118,6 +155,7 @@ const runs = [
   mk("gh-4", "feat/x", "ddddd dd4", "2026-10-03T04:00:00Z", featMid, DROP),
   mk("gh-5", "feat/x", "fffffff6", "2026-10-05T04:00:00Z", featMid, DROP),
   mk("gh-6", "feat/x", "eeeeee e5", "2026-10-08T09:15:00Z", featNew, DROP),
+  mkPair("gh-7", "feat/y", "1111111a", "2026-10-09T05:00:00Z", pairHead, "main", "2222222b", pairBase),
 ].sort((a, b) => a.date.localeCompare(b.date));
 
 /* ── assertions ────────────────────────────────────────────────────── */
@@ -133,7 +171,7 @@ function eq(name, got, want) {
 console.log("=== bench/compare.html selection logic\n");
 
 const refs = refsOf(runs);
-eq("refs discovered from data", refs, ["feat/x", "main"]);
+eq("refs discovered from data", refs, ["feat/x", "feat/y", "main"]);
 
 const a = runsOf(runs, "feat/x"), b = runsOf(runs, "main");
 
@@ -175,6 +213,27 @@ const dFast = diffRow(lb.metrics.bench_ui[fasterKey], la.metrics.bench_ui[faster
 eq("B faster => good", dFast.cls, "good");
 const dSlow = diffRow(lb.metrics.bench_ui[slowerKey], la.metrics.bench_ui[slowerKey]);
 eq("B slower => bad", dSlow.cls, "bad");
+
+// same-machine pairs: only runs carrying an embedded base qualify
+const pairs = pairRuns(runs);
+eq("one pair run discovered", pairs.length, 1);
+eq("pair run is the run with an embedded base", pairs[0].id, "gh-7");
+eq("pickPair returns the pair", pickPair(runs, 0).id, "gh-7");
+eq("pickPair out of range is null", pickPair(runs, 9), null);
+eq("plain runs are not pairs", pairRuns([runs.find(r => r.id === "gh-1")]).length, 0);
+
+// base vs head uses the same ns/op direction rule as the ref compare
+const pr = pairs[0];
+const headFaster = Object.keys(pr.metrics.bench_ui).find(
+  k => pr.metrics.bench_ui[k] < pr.base.metrics.bench_ui[k]);
+const unchanged = Object.keys(pr.metrics.bench_ui).find(
+  k => pr.metrics.bench_ui[k] === pr.base.metrics.bench_ui[k]);
+eq("pair has a head-faster metric", !!headFaster, true);
+eq("pair has an unchanged metric", !!unchanged, true);
+eq("head faster than base => good",
+   diffRow(pr.base.metrics.bench_ui[headFaster], pr.metrics.bench_ui[headFaster]).cls, "good");
+eq("head unchanged vs base => flat",
+   diffRow(pr.base.metrics.bench_ui[unchanged], pr.metrics.bench_ui[unchanged]).cls, "flat");
 
 // flat threshold: identical values read as flat, not good/bad
 const dFlat = diffRow(100, 100);

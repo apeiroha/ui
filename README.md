@@ -41,7 +41,7 @@ make test-idle-wait   # 事件驱动空载：唤醒延迟 + 关机不空等
 make test-stack-overflow # 8MB 栈溢出干净报错
 make bench-ui         # 协程调度基准
 make bench-ui-io      # I/O 基准
-make bench-json       # 采集为 JSON（scripts/bench_collect.mjs，多次取最小值）
+make bench-json       # 采集为 JSON（scripts/bench_collect.mjs，多次取最小值；BASE_DIR= 可做同机 A/B）
 ```
 
 默认 `TOOLCHAIN=clang`（musl 静态链接）。可用 `TOOLCHAIN=zig|gcc|gcc-musl`
@@ -49,14 +49,27 @@ make bench-json       # 采集为 JSON（scripts/bench_collect.mjs，多次取�
 
 ## 基准追踪
 
-`.github/workflows/bench.yml` 在 main 每次推送、每日定时或手动触发时构建
-release 基准，运行 3 次取每项最小值，将结果追加到 `gh-pages` 分支的历史
-数据，并发布可视化面板：
+`.github/workflows/bench.yml` 在 main 每次推送、每日定时、手动触发，以及针对
+main 的 PR 时构建 release 基准。每项指标运行 3 次取最小值（共享 runner 上
+最小值是噪声最小的估计量）。
+
+每个 job 都做**同机 A/B**：同一个 runner 上分别编译并交替运行两个版本的
+二进制，两边共担机器漂移，因此对比结果不是机器差异造成的。对照关系按事件如下：
+
+| 触发 | 对照 base | 新版本 head |
+|------|-----------|-------------|
+| PR（针对 main） | `pull_request.base.sha`（合并基点） | PR head |
+| 推送到 main | `github.event.before`（上一个 main tip） | 新提交 |
+| 定时 / 手动 | 无（手动可用 `base_ref` 指定） | 目标 ref |
+
+结果追加到 `gh-pages` 分支的历史数据，并发布可视化面板：
 
 **https://apeiroha.github.io/ui/**
 
-面板按指标展示 ns/op 随时间的变化趋势、最新值与环比涨跌。历史数据存于
-`gh-pages` 的 `data/bench.json`，页面模板为 `bench/index.html`。
+面板按指标展示 ns/op 随时间的变化趋势、最新值与环比涨跌；对比页
+`bench/compare.html` 提供 latest、time-aligned、same-machine pair 三种模式，
+后者基于记录里内嵌的 baseline。历史数据存于 `gh-pages` 的 `data/bench.json`，
+页面模板为 `bench/index.html` 与 `bench/compare.html`。
 
 ## 环境变量
 
