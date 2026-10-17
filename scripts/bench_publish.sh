@@ -6,7 +6,8 @@
 set -euo pipefail
 
 run_json="${1:?usage: bench_publish.sh RUN.json}"
-source_dir="${SOURCE_DIR:-bench}"
+# Built by `npm run build` in web/ (see .github/workflows/bench.yml).
+source_dir="${SOURCE_DIR:-web/dist}"
 pages_branch="${PAGES_BRANCH:-gh-pages}"
 
 remote="${PAGES_REMOTE:-}"
@@ -34,8 +35,10 @@ else
     git -C "$pages_dir" remote add origin "$remote"
 fi
 
-cp "$source_dir/index.html" "$pages_dir/index.html"
-cp "$source_dir/compare.html" "$pages_dir/compare.html"
+# Replace the built assets wholesale so renamed/stale hashed bundles do
+# not linger; the dashboard HTML and its hashed assets share a build id.
+rm -rf "$pages_dir/assets"
+cp -r "$source_dir"/. "$pages_dir"/
 touch "$pages_dir/.nojekyll"
 node scripts/bench_merge.mjs "$run_json" "$pages_dir/data/bench.json"
 
