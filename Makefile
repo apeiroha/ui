@@ -219,6 +219,17 @@ bench-json: $(BUILD_DIR)/bench_ui $(BUILD_DIR)/bench_ui_io
 	node scripts/bench_collect.mjs --bin-dir $(BUILD_DIR) --iters 3 --out bench-output.json \
 		$(if $(BASE_DIR),--base-bin-dir $(BASE_DIR),)
 
+# ── Web dashboard (web/) ──
+# Solid 2 + TypeScript app; locally driven by bun, CI uses node/npm.
+web-install:
+	cd web && bun install
+
+web-build:
+	cd web && bun run build
+
+web-test:
+	cd web && bun run test
+
 # ── Perf profiling ──
 .PHONY: bench-ui-perf
 bench-ui-perf:
@@ -229,7 +240,8 @@ bench-ui-perf:
 .PHONY: all test test-ui test-c8-race test-p0 test-p0-asan test-udp-echo \
         test-sched-iopark test-spawn-steal test-lifo-slot test-stack-overflow \
         test-polladd-degraded \
-        bench-ui bench-ui-io bench-json bench-build libui clean
+        bench-ui bench-ui-io bench-json bench-build \
+        web-install web-build web-test libui clean
 
 test: test-ui test-c8-race test-p0 test-udp-echo test-sched-iopark \
        test-spawn-steal test-idle-wait test-stack-overflow test-polladd-degraded

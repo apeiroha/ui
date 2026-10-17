@@ -150,6 +150,20 @@ jobs:
           fi
           node scripts/bench_collect.mjs "${args[@]}"
 
+      # The dashboard is a Solid + TypeScript app under web/, built with
+      # node (>=22.12 for @solidjs/web). bench_publish copies web/dist.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build dashboard assets
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
       # Fork PRs get a read-only GITHUB_TOKEN, so the gh-pages push below
       # cannot succeed. Skip the publish rather than fail the whole job; the
       # benchmark itself still runs, so the numbers are visible in the job log.

@@ -44,6 +44,17 @@ make bench-ui-io      # I/O 基准
 make bench-json       # 采集为 JSON（scripts/bench_collect.mjs，多次取最小值；BASE_DIR= 可做同机 A/B）
 ```
 
+前端面板（`web/`，Solid 2 + TypeScript）本地用 bun：
+
+```sh
+cd web && bun install   # 安装依赖（本地用 bun）
+cd web && bun run dev   # 开发服务器
+cd web && bun run test  # 纯逻辑单元测试（vitest）
+cd web && bun run build # 产出 web/dist
+```
+
+CI 里改用 node/npm（`@solidjs/web` 需要 node ≥22.12）。
+
 默认 `TOOLCHAIN=clang`（musl 静态链接）。可用 `TOOLCHAIN=zig|gcc|gcc-musl`
 切换；`BUILD=release` 为优化构建；`STD=c23|gnu23` 选择标准。
 
@@ -66,10 +77,11 @@ main 的 PR 时构建 release 基准。每项指标运行 3 次取最小值（�
 
 **https://apeiroha.github.io/ui/**
 
-面板按指标展示 ns/op 随时间的变化趋势、最新值与环比涨跌；对比页
-`bench/compare.html` 提供 latest、time-aligned、same-machine pair 三种模式，
-后者基于记录里内嵌的 baseline。历史数据存于 `gh-pages` 的 `data/bench.json`，
-页面模板为 `bench/index.html` 与 `bench/compare.html`。
+面板是 `web/` 下的 Solid 2 + TypeScript 应用（Vite 构建，图表为自绘内联
+SVG，无外部图表库）。追踪页展示 ns/op 随时间的变化趋势、最新值与环比涨跌；
+对比页提供 latest、time-aligned、same-machine pair 三种模式，后者基于记录里
+内嵌的 baseline。历史数据存于 `gh-pages` 的 `data/bench.json`，页面由
+`bench_publish.sh` 从构建产物 `web/dist/` 发布。
 
 ## 环境变量
 
