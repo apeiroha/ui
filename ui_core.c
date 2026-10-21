@@ -487,8 +487,12 @@ ui_steal_work(ui_vCPU *v)
          * revalidated after re-locking. */
         {
             ui_vCPU *vc = vic;
-            int cur_running = vc->current &&
-                vc->current->state == UI_RUNNING;
+            /* The victim may clear ->current between the NULL check and
+             * the state load.  Read the pointer once: re-reading it in the
+             * second operand can dereference NULL (seen as a fault at 0x40
+             * in the r11c stress). */
+            ui_Goro *cur = vc->current;
+            int cur_running = cur && cur->state == UI_RUNNING;
             pthread_spin_unlock(&vic->runq_lock);
             if (cur_running)
                 for (int k = 0; k < UI_RUNNEXT_BACKOFF_ITERS; k++)
@@ -1488,8 +1492,16 @@ ui_wakeup(ui_Goro *g)
  * completed handoff pulls the partner back to the waker's core
  * (Go: goready -> ready(gp, next=true) -> runqput(next=true)).
  *
- * Rewrites home_vcpu to the waker's vCPU — sanctioned soft-binding
- * drift, identical to what work stealing does when it migrates a goro.
+ * Only do this when the waker's vCPU is already the partner's home.  The
+ * partner may have published WAITING and its wait node, but not yet reached
+ * its own ui_switch: its saved rsp still belongs to the PREVIOUS park.  If a
+ * different vCPU ran it now it would resume from the stale rsp while the
+ * original vCPU is still executing the park path -- the same goro running
+ * twice (and later reusing/madvising its stack).  Cross-vCPU wakes therefore
+ * route through ui_wake_enqueue(), which targets home_vcpu; that vCPU is the
+ * one currently running the partner, so it cannot pick it up until the park
+ * switch has completed.
+ *
  * Explicitly bound goros keep their targeted placement and route via
  * ui_wake_enqueue instead: `pinned` (GoOn first-run pin) or `bound`
  * (ui_PinTo).
@@ -1506,17 +1518,16 @@ ui_wakeup_handoff(ui_Goro *g)
 
     ui_vCPU *cur = ui_this_vcpu;
     if (cur && cur->current && !g->pinned && !g->bound &&
-        cur->id < g_ui_sched.nvcpus)
+        cur->id == g->home_vcpu && cur->id < g_ui_sched.nvcpus)
     {
-        g->home_vcpu = cur->id;
         ui_dbg_deliver(g, cur->id, 9);
         ui_runnext_put(cur, g);
         return;
     }
 
-    /* Bound goro: honor g->home_vcpu.  Note the state CAS above already
-     * succeeded, so we must enqueue directly rather than call ui_wakeup
-     * (whose own CAS would fail and silently drop the wakeup). */
+    /* Cross-vCPU or bound goro: honor g->home_vcpu.  Note the state CAS
+     * above already succeeded, so we must enqueue directly rather than call
+     * ui_wakeup (whose own CAS would fail and silently drop the wakeup). */
     ui_wake_enqueue(g);
 }
 
