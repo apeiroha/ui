@@ -57,7 +57,9 @@ struct ui_RecvMulti
     struct sockaddr_storage addr;
     uint32_t                msg_namelen;    /* reserved name buf size */
     uint32_t                msg_controllen; /* reserved ctrl buf size */
+    int                     vcpu;           /* ring/list owner at creation */
     struct ui_RecvMulti    *next;
+    struct ui_RecvMulti    *close_next;     /* owner close queue */
 };
 
 #define UI_PAGE_SIZE        4096
@@ -158,6 +160,7 @@ struct ui_Goro
     int       dbg_d1v, dbg_d1k;
 #endif
     int       sleepq_idx;  /* index in sleepq heap, -1 if not in sleepq */
+    atomic_int sleepq_vcpu;/* owning vCPU's sleepq, -1 if not queued */
     /* Intrusive circular linked list (runq) */
     ui_Goro  *prev;
     ui_Goro  *next;
@@ -221,11 +224,19 @@ typedef struct
     struct ui_RecvMulti *active_multishot;
     /* Closed multishots awaiting their cancel+terminal CQEs before free. */
     struct ui_RecvMulti *retired_multishot;
+    /* Cross-vCPU closes are deferred to the owner (single issuer). */
+    struct ui_RecvMulti *rm_closeq_head;
+    struct ui_RecvMulti *rm_closeq_tail;
+    pthread_spinlock_t rm_closeq_lock;
+    atomic_int       rm_closeq_len;
     void            *sched_rsp;
     ui_Goro         *current;
     /* Sleep queue (binary min-heap by wakeup_time) */
     ui_Goro         *sleepq[256];
     int              sleepq_size;
+    pthread_spinlock_t sleepq_lock;
+    atomic_int       sleepq_len;      /* mirror of sleepq_size for fast checks */
+    atomic_uint_least64_t sleepq_top_us; /* earliest deadline, UINT64_MAX=empty */
     atomic_int       running;
     long             tick;
     uint32_t         rng_state;
@@ -282,6 +293,7 @@ void          ui_schedule(void);
 void          ui_vcpu_idle(ui_vCPU *v);
 void          ui_wakeup(ui_Goro *g);
 void          ui_wakeup_handoff(ui_Goro *g);
+void          ui_wake_vcpu(ui_vCPU *v);
 void          ui_goro_exit(void);
 
 int           ui_stack_init(ui_Goro *g, int stack_size);
@@ -301,7 +313,7 @@ void          ui_standbyq_init(ui_vCPU *v);
 void          ui_standbyq_push(ui_vCPU *v, ui_Goro *g);
 
 int           ui_sleepq_push(ui_vCPU *v, ui_Goro *g, uint64_t deadline_us);
-void          ui_sleepq_remove(ui_vCPU *v, ui_Goro *g);
+void          ui_sleepq_remove(ui_Goro *g);
 ui_Goro      *ui_sleepq_pop(ui_vCPU *v);
 int           ui_sleepq_expire(ui_vCPU *v, uint64_t now_us);
 uint64_t      ui_now_ms(void);
@@ -311,6 +323,7 @@ int           ui_vcpu_ensure_ring(ui_vCPU *v);
 int           ui_vcpu_ensure_buf_ring(ui_vCPU *v);
 void          ui_vcpu_destroy_buf_ring(ui_vCPU *v);
 void          ui_uring_drain(ui_vCPU *v);
+void          ui_recvmulti_process_closeq(ui_vCPU *v);
 void          ui_uring_idle_wait(ui_vCPU *v, uint64_t wait_us);
 int           ui_uring_enter(int ring_fd, unsigned to_submit,
                              unsigned min_complete, unsigned flags);
@@ -338,9 +351,11 @@ int           ui_waitq_count(ui_WaitQ *q);
  * 才到达，届时栈帧已死，drain 解引用 &batch 即 use-after-scope。 ── */
 struct ui_RecvBatch {
     ui_Goro  *goro;
-    int       count;   /* atomic: completions seen */
-    int       active;  /* 1 while caller is still waiting */
-    unsigned  total;   /* 该批提交的 op 总数；count 达到 total 后可安全 free */
+    int       count;   /* protected by lock */
+    int       active;  /* 1 while caller is still waiting; protected by lock */
+    unsigned  total;   /* read-only after submit */
+    pthread_spinlock_t lock;
+    int       refs;    /* caller + ring; last one frees */
 };
 
 #endif

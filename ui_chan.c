@@ -139,8 +139,28 @@ ui_ChanRecv(uint64_t ch, void *val)
             ui_WaitNode *n = c->send_wait.head;
             ui_waitq_remove_node(&c->send_wait, n);
             const void *send_data = n->g->chan_send_ptr;
-            if (send_data && val)
+            if (c->count > 0)
+            {
+                /* Buffered channel: hand out the oldest value and append the
+                 * blocked sender's value at the tail.  Direct handoff would
+                 * deliver the new value ahead of the buffered ones. */
+                unsigned rpos = c->read_idx % c->cap;
+                if (val)
+                    memcpy(val, (char *)c->buf + rpos * c->elem_size,
+                           c->elem_size);
+                c->read_idx++;
+                if (send_data)
+                {
+                    unsigned wpos = c->write_idx % c->cap;
+                    memcpy((char *)c->buf + wpos * c->elem_size,
+                           send_data, c->elem_size);
+                }
+                c->write_idx++;
+            }
+            else if (send_data && val)
+            {
                 memcpy(val, send_data, c->elem_size);
+            }
             n->g->chan_handoff = 1;
             /* Hand the partner to OUR LIFO slot: this re-converges a
              * ping-pong pair onto one vCPU after any stealing split
@@ -408,7 +428,14 @@ ui_select_try_recv(ui_Chan *c, void *buf)
 static int
 ui_select_try_send(ui_Chan *c, const void *val)
 {
-    if (c->count < c->cap && !c->closed)
+    if (c->closed)
+    {
+        /* A send case on a closed channel is a program error, same as
+         * ui_ChanSend.  Returning 0 used to re-register the node in
+         * send_wait and park forever. */
+        ui_chan_send_closed_fatal();
+    }
+    if (c->count < c->cap)
     {
         unsigned pos = c->write_idx % c->cap;
         memcpy((char *)c->buf + pos * c->elem_size, val, c->elem_size);
@@ -457,14 +484,15 @@ ui_SelectWait(const uint64_t *recv_chs, void **recv_bufs,
         return -1;
     }
 
-    ui_vCPU *v = ui_get_vcpu();
-    ui_Goro *g = v ? v->current : NULL;
     uint64_t deadline = 0;
     if (timeout_ms > 0)
         deadline = ui_now_us() + (uint64_t)timeout_ms * 1000;
 
     for (;;)
     {
+        ui_vCPU *v = ui_get_vcpu();
+        ui_Goro *g = v ? v->current : NULL;
+
         for (int i = 0; i < nrecv; i++)
         {
             ui_Chan *c = (ui_Chan *)(uintptr_t)recv_chs[i];
@@ -486,12 +514,8 @@ ui_SelectWait(const uint64_t *recv_chs, void **recv_bufs,
         if (timeout_ms == 0)
             return -1;
 
-        if (timeout_ms > 0)
-        {
-            uint64_t now = ui_now_us();
-            if (now >= deadline)
-                return -1;
-        }
+        if (timeout_ms > 0 && ui_now_us() >= deadline)
+            return -1;
 
         if (!v || !g)
         {
@@ -512,6 +536,12 @@ ui_SelectWait(const uint64_t *recv_chs, void **recv_bufs,
             nodes[i].data = &ctx;
         }
 
+        /* Publish WAITING before any node becomes visible.  If a waker
+         * pops a node while the goro is still RUNNING its CAS is lost,
+         * and with an infinite timeout nothing would ever wake us. */
+        __atomic_store_n(&g->state, UI_WAITING, __ATOMIC_RELEASE);
+
+        int early = -1;
         for (int i = 0; i < nrecv; i++)
         {
             ui_Chan *c = (ui_Chan *)(uintptr_t)recv_chs[i];
@@ -519,52 +549,106 @@ ui_SelectWait(const uint64_t *recv_chs, void **recv_bufs,
             if (ui_select_try_recv(c, recv_bufs ? recv_bufs[i] : NULL))
             {
                 pthread_spin_unlock(&c->lock);
-                ui_select_cleanup(recv_chs, send_chs, nodes, nrecv, nsend);
-                free(nodes);
-                return i;
+                early = i;
+                break;
             }
             ui_waitq_push_node(&c->recv_wait, &nodes[i]);
             pthread_spin_unlock(&c->lock);
         }
 
-        for (int i = 0; i < nsend; i++)
+        if (early < 0)
         {
-            int ni = nrecv + i;
-            ui_Chan *c = (ui_Chan *)(uintptr_t)send_chs[i];
-            pthread_spin_lock(&c->lock);
-            if (ui_select_try_send(c, send_vals[i]))
+            for (int i = 0; i < nsend; i++)
             {
+                int ni = nrecv + i;
+                ui_Chan *c = (ui_Chan *)(uintptr_t)send_chs[i];
+                pthread_spin_lock(&c->lock);
+                if (ui_select_try_send(c, send_vals[i]))
+                {
+                    pthread_spin_unlock(&c->lock);
+                    early = ni;
+                    break;
+                }
+                ui_waitq_push_node(&c->send_wait, &nodes[ni]);
                 pthread_spin_unlock(&c->lock);
-                ui_select_cleanup(recv_chs, send_chs, nodes, nrecv, nsend);
-                free(nodes);
-                return ni;
             }
-            ui_waitq_push_node(&c->send_wait, &nodes[ni]);
-            pthread_spin_unlock(&c->lock);
         }
 
-        g->state = UI_WAITING;
+        if (early >= 0)
+        {
+            int queued = __atomic_load_n(&g->state, __ATOMIC_ACQUIRE) !=
+                         UI_WAITING;
+            ui_select_cleanup(recv_chs, send_chs, nodes, nrecv, nsend);
+            free(nodes);
+            if (queued)
+            {
+                /* A waker already enqueued this goro; let the scheduler
+                 * resume it before returning, so it is not both current
+                 * and present in a runq. */
+                ui_switch(&g->rsp, v->sched_rsp);
+            }
+            else
+            {
+                __atomic_store_n(&g->state, UI_RUNNING, __ATOMIC_RELEASE);
+            }
+            return early;
+        }
+
+        int queued = __atomic_load_n(&g->state, __ATOMIC_ACQUIRE) !=
+                     UI_WAITING;
+        if (!queued && atomic_load_explicit(&ctx.fired, memory_order_acquire))
+        {
+            /* A wake raced with the RUNNING window; its op is visible in
+             * the channel, so retry without parking. */
+            ui_select_cleanup(recv_chs, send_chs, nodes, nrecv, nsend);
+            free(nodes);
+            __atomic_store_n(&g->state, UI_RUNNING, __ATOMIC_RELEASE);
+            continue;
+        }
+
+        if (queued)
+        {
+            ui_select_cleanup(recv_chs, send_chs, nodes, nrecv, nsend);
+            free(nodes);
+            ui_switch(&g->rsp, v->sched_rsp);
+            continue;
+        }
+
         if (timeout_ms > 0)
         {
             uint64_t now = ui_now_us();
-            if (now >= deadline ||
-                ui_sleepq_push(v, g, deadline) != 0)
+            if (now >= deadline)
             {
-                g->state = UI_READY;
                 ui_select_cleanup(recv_chs, send_chs, nodes, nrecv, nsend);
                 free(nodes);
-                if (now >= deadline) return -1;
-                ui_Yield();
+                __atomic_store_n(&g->state, UI_RUNNING, __ATOMIC_RELEASE);
+                return -1;
+            }
+            if (ui_sleepq_push(v, g, deadline) != 0)
+            {
+                /* Sleepq full: yield and retry.  A waker may have queued
+                 * us concurrently; in that case switch instead of yielding. */
+                if (__sync_bool_compare_and_swap(&g->state, UI_WAITING,
+                                                 UI_READY))
+                {
+                    ui_select_cleanup(recv_chs, send_chs, nodes, nrecv, nsend);
+                    free(nodes);
+                    ui_Yield();
+                    continue;
+                }
+                ui_select_cleanup(recv_chs, send_chs, nodes, nrecv, nsend);
+                free(nodes);
+                ui_switch(&g->rsp, v->sched_rsp);
                 continue;
             }
         }
 
         ui_switch(&g->rsp, v->sched_rsp);
-
         ui_select_cleanup(recv_chs, send_chs, nodes, nrecv, nsend);
         free(nodes);
 
-        if (timeout_ms > 0 && atomic_load_explicit(&ctx.fired, memory_order_acquire) == 0 &&
+        if (timeout_ms > 0 &&
+            atomic_load_explicit(&ctx.fired, memory_order_acquire) == 0 &&
             ui_now_us() >= deadline)
             return -1;
     }

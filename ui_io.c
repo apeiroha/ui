@@ -1,5 +1,12 @@
 #include "ui_internal.h"
 
+#ifdef UI_DEBUG_FOREIGN_DRAIN
+int ui_debug_foreign_drain;
+#endif
+#ifdef UI_DEBUG_RECVBATCH
+int ui_debug_recvbatch_live;
+#endif
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -421,7 +428,12 @@ ui_recvmulti_retire_free(ui_vCPU *v, struct ui_RecvMulti *rm);
 /* Drain all available CQEs, waking goroutines */
 void
 ui_uring_drain(ui_vCPU *v)
-{    if (!v || v->ring_fd < 0)
+{
+#ifdef UI_DEBUG_FOREIGN_DRAIN
+    if (v && ui_this_vcpu && v != ui_this_vcpu)
+        __atomic_fetch_add(&ui_debug_foreign_drain, 1, __ATOMIC_RELAXED);
+#endif
+    if (!v || v->ring_fd < 0)
         return;
 
     unsigned head = *v->cq_head;
@@ -453,16 +465,18 @@ ui_uring_drain(ui_vCPU *v)
             if (cqe->res < 0 || !(cqe->flags & IORING_CQE_F_MORE))
                 rm->terminal_seen = 1;
 
-            if (!rm->active)
+            if (!__atomic_load_n(&rm->active, __ATOMIC_ACQUIRE))
             {
-                if (rm->retired && rm->terminal_seen && rm->cancel_seen)
+                if (__atomic_load_n(&rm->retired, __ATOMIC_ACQUIRE) &&
+                    rm->terminal_seen && rm->cancel_seen)
                     ui_recvmulti_retire_free(v, rm);
                 goto skip;
             }
 
             if (cqe->flags & IORING_CQE_F_BUFFER && cqe->res > 0)
             {
-                int bid = (int)(cqe->flags >> IORING_CQE_BUFFER_SHIFT);
+                int bid = (int)((cqe->flags >> IORING_CQE_BUFFER_SHIFT) &
+                                (unsigned)(v->buf_ring_count - 1));
                 void *buf = (unsigned char *)v->buf_ring_bufs +
                             (size_t)bid * (size_t)v->buf_ring_buf_size;
                 struct io_uring_recvmsg_out *o = ui_recvmsg_out(buf);
@@ -473,34 +487,67 @@ ui_uring_drain(ui_vCPU *v)
                        ui_recvmsg_payload(o, rm->msg_namelen,
                                            rm->msg_controllen),
                        ui_recvmsg_payloadlen(o));
+
+                /* Non-INC buffer rings consume the buffer; return it so a
+                 * long-lived multishot does not die after 256 datagrams. */
+                if (v->buf_ring)
+                {
+                    uint16_t tail = v->buf_ring->tail;
+                    struct io_uring_buf *rb =
+                        &v->buf_ring->bufs[tail &
+                            (uint16_t)(v->buf_ring_count - 1)];
+                    rb->addr = (uint64_t)(uintptr_t)buf;
+                    rb->len = (uint32_t)v->buf_ring_buf_size;
+                    rb->bid = (uint16_t)bid;
+                    rb->resv = 0;
+                    __sync_synchronize();
+                    v->buf_ring->tail = tail + 1;
+                }
             }
-            else if (cqe->res < 0)
+
+            if (cqe->res < 0 || !(cqe->flags & IORING_CQE_F_MORE))
             {
-                /* Error or cancellation */
-                rm->active = 0;
+                /* Error, cancellation, or normal multishot termination. */
+                __atomic_store_n(&rm->terminal_seen, 1, __ATOMIC_RELAXED);
+                __atomic_store_n(&rm->active, 0, __ATOMIC_RELEASE);
+                if (v->uring_pending > 0)
+                    v->uring_pending--;
             }
         }
         else if (cqe->user_data & 2)
         {
             /* ── Batch recv completion ── */
             struct ui_RecvBatch *b = (struct ui_RecvBatch *)(uintptr_t)(cqe->user_data & ~3ULL);
-            if (!b->active)
-            {
-                /* 调用者已返回：收割到该批最后一个 CQE 后才能释放 */
-                if ((unsigned)b->count >= b->total)
-                    free(b);
-                goto skip;
-            }
-            __sync_fetch_and_add(&b->count, 1);
-            if (b->count == 1)
+            unsigned total;
+            int n;
+
+            pthread_spin_lock(&b->lock);
+            total = b->total;
+            n = ++b->count;
+            if (b->active && n == 1)
             {
                 if (b->goro != v->current)
                     ui_wakeup(b->goro);
                 else
                     b->goro->state = UI_READY;
             }
+            pthread_spin_unlock(&b->lock);
+
             if (v->uring_pending > 0)
                 v->uring_pending--;
+
+            /* The ring's reference is dropped once every submitted op has
+             * produced a CQE (data or ECANCELED).  The caller drops its
+             * own reference after it finishes reading count. */
+            if ((unsigned)n == total &&
+                __atomic_sub_fetch(&b->refs, 1, __ATOMIC_ACQ_REL) == 0)
+            {
+                pthread_spin_destroy(&b->lock);
+#ifdef UI_DEBUG_RECVBATCH
+                __atomic_fetch_sub(&ui_debug_recvbatch_live, 1, __ATOMIC_RELAXED);
+#endif
+                free(b);
+            }
         }
         else if (cqe->user_data != 0)
         {
@@ -597,7 +644,8 @@ ui_io_submit_and_wait(ui_vCPU *v, struct io_uring_sqe *sqe)
         cur->state = UI_WAITING;
         /* Yield and wait for completion */
         ui_switch(&cur->rsp, v->sched_rsp);
-        ui_uring_drain(v);
+        v = ui_this_vcpu;
+        if (v) ui_uring_drain(v);
     }
 
     return cur->io_result;
@@ -872,6 +920,7 @@ ui_RecvMulti(int fd, ui_RecvMultiCb cb, void *ctx)
     if (!rm) return NULL;
 
     rm->fd = fd;
+    rm->vcpu = v->id;
     rm->active = 1;
     rm->cb = cb;
     rm->ctx = ctx;
@@ -930,52 +979,101 @@ ui_recvmulti_retire_free(ui_vCPU *v, struct ui_RecvMulti *rm)
     free(rm);
 }
 
-void
-ui_RecvMultiClose(struct ui_RecvMulti *rm)
+static void
+ui_recvmulti_enqueue_close(ui_vCPU *v, struct ui_RecvMulti *rm)
 {
-    if (!rm || !rm->active) return;
-    rm->active = 0;
-    rm->retired = 1;
+    rm->close_next = NULL;
+    pthread_spin_lock(&v->rm_closeq_lock);
+    if (v->rm_closeq_tail)
+        v->rm_closeq_tail->close_next = rm;
+    else
+        v->rm_closeq_head = rm;
+    v->rm_closeq_tail = rm;
+    atomic_fetch_add_explicit(&v->rm_closeq_len, 1, memory_order_relaxed);
+    pthread_spin_unlock(&v->rm_closeq_lock);
+}
 
-    ui_vCPU *v = ui_this_vcpu;
-    if (v)
+void
+ui_recvmulti_process_closeq(ui_vCPU *v)
+{
+    pthread_spin_lock(&v->rm_closeq_lock);
+    struct ui_RecvMulti *head = v->rm_closeq_head;
+    v->rm_closeq_head = NULL;
+    v->rm_closeq_tail = NULL;
+    atomic_store_explicit(&v->rm_closeq_len, 0, memory_order_relaxed);
+    pthread_spin_unlock(&v->rm_closeq_lock);
+
+    if (!head)
+        return;
+
+    int submitted = 0;
+    while (head)
     {
-        for (struct ui_RecvMulti **p = &v->active_multishot; *p; p = &(*p)->next)
+        struct ui_RecvMulti *next = head->close_next;
+        head->close_next = NULL;
+
+        for (struct ui_RecvMulti **p = &v->active_multishot; *p;
+             p = &(*p)->next)
         {
-            if (*p == rm)
+            if (*p == head)
             {
-                *p = rm->next;
+                *p = head->next;
                 break;
             }
         }
         if (!v->active_multishot)
             v->has_multishot = 0;
 
-        /* Park the rm until the kernel confirms the cancel: the terminal
-         * multishot CQE and the ASYNC_CANCEL completion CQE must both be
-         * reaped before freeing, otherwise ui_uring_drain reads freed
-         * memory.  The rm is pushed to the retired list BEFORE submitting
-         * the cancel so a completion reaped by this drain can free it. */
-        rm->next = v->retired_multishot;
-        v->retired_multishot = rm;
+        head->next = v->retired_multishot;
+        v->retired_multishot = head;
 
-        struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
-        if (sqe)
+        if (v->ring_fd >= 0)
         {
-            sqe->opcode = IORING_OP_ASYNC_CANCEL;
-            sqe->addr = (uint64_t)(uintptr_t)rm | 1;
-            sqe->off = IORING_ASYNC_CANCEL_USERDATA;
-            sqe->fd = -1;
-            sqe->user_data = (uint64_t)(uintptr_t)rm | 5;
-            ui_uring_submit(v);
+            struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
+            if (sqe)
+            {
+                memset(sqe, 0, sizeof(*sqe));
+                sqe->opcode = IORING_OP_ASYNC_CANCEL;
+                sqe->addr = (uint64_t)(uintptr_t)head | 1;
+                sqe->cancel_flags = IORING_ASYNC_CANCEL_USERDATA;
+                sqe->fd = -1;
+                sqe->user_data = (uint64_t)(uintptr_t)head | 5;
+                ui_uring_submit(v);
+                submitted = 1;
+            }
         }
-        /* Drain any CQEs that completed synchronously. */
-        ui_uring_drain(v);
+        head = next;
     }
-    else
+
+    if (submitted)
+        ui_uring_drain(v);
+}
+
+void
+ui_RecvMultiClose(struct ui_RecvMulti *rm)
+{
+    if (!rm)
+        return;
+    /* Only the first close wins.  A cross-vCPU caller must not touch the
+     * owner's lists or ring: defer to the owner, which is the only thread
+     * allowed to submit on that ring (SINGLE_ISSUER). */
+    if (__atomic_exchange_n(&rm->active, 0, __ATOMIC_ACQ_REL) == 0)
+        return;
+    __atomic_store_n(&rm->retired, 1, __ATOMIC_RELEASE);
+
+    int id = rm->vcpu;
+    if (id < 0 || id >= g_ui_sched.nvcpus)
     {
         free(rm);
+        return;
     }
+
+    ui_vCPU *owner = &g_ui_sched.vcpus[id];
+    ui_recvmulti_enqueue_close(owner, rm);
+    if (ui_this_vcpu == owner)
+        ui_recvmulti_process_closeq(owner);
+    else
+        ui_wake_vcpu(owner);
 }
 
 /* ── Batch submission ── */
@@ -1051,7 +1149,8 @@ ui_SendMMsg(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags)
     while (cur->io_pending) {
         cur->state = UI_WAITING;
         ui_switch(&cur->rsp, v->sched_rsp);
-        ui_uring_drain(v);
+        v = ui_this_vcpu;
+        if (v) ui_uring_drain(v);
     }
 
     return (int)cur->io_result;
@@ -1122,7 +1221,8 @@ ui_RecvMMsg(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags)
     while (cur->io_pending) {
         cur->state = UI_WAITING;
         ui_switch(&cur->rsp, v->sched_rsp);
-        ui_uring_drain(v);
+        v = ui_this_vcpu;
+        if (v) ui_uring_drain(v);
     }
 
     return (int)cur->io_result;
@@ -1147,6 +1247,7 @@ ui_RecvBatch(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags)
     if (!v || !v->current) return -1;
     if (ui_vcpu_ensure_ring(v) < 0) return -1;
     if (vlen == 0) return 0;
+    ui_vCPU *ring_v = v;
 
     {
         unsigned head = *v->sq_head;
@@ -1169,6 +1270,11 @@ ui_RecvBatch(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags)
      * 放栈上则返回后即悬垂——use-after-scope / 错误唤醒。 */
     struct ui_RecvBatch *b = calloc(1, sizeof(*b));
     if (!b) return -1;
+#ifdef UI_DEBUG_RECVBATCH
+    __atomic_fetch_add(&ui_debug_recvbatch_live, 1, __ATOMIC_RELAXED);
+#endif
+    pthread_spin_init(&b->lock, PTHREAD_PROCESS_PRIVATE);
+    __atomic_store_n(&b->refs, 2, __ATOMIC_RELAXED);
     b->goro = cur;
     b->active = 1;
     b->total = vlen;
@@ -1194,7 +1300,8 @@ ui_RecvBatch(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags)
         while (b->count == 0 && cur->io_pending) {
             cur->state = UI_WAITING;
             ui_switch(&cur->rsp, v->sched_rsp);
-            ui_uring_drain(v);
+            v = ui_this_vcpu;
+            if (v) ui_uring_drain(v);
         }
     }
 
@@ -1206,26 +1313,40 @@ ui_RecvBatch(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags)
      * 因此绝不置 io_pending（置了永远无人清除）。
      * CANCEL_FD|CANCEL_ALL：按 fd 匹配并取消该 ring 上全部在途 RECVMSG；
      * 每个被取消的 op 会以原 user_data 投递 ECANCELED CQE，供计数与释放。 */
-    if (vlen > (unsigned)b->count) {
+    /* Only the original ring owner may submit the cancel (SINGLE_ISSUER).
+     * If PinTo moved us, skip it: the stale CQEs still arrive on ring_v
+     * and the refcount frees b when the last one is reaped. */
+    if (v == ring_v && vlen > (unsigned)b->count)
+    {
         /* 先腾出 SQE 槽位 */
-        ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
-        ui_uring_drain(v);
-        struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
-        if (sqe) {
+        ui_uring_enter(ring_v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
+        ui_uring_drain(ring_v);
+        struct io_uring_sqe *sqe = ui_uring_get_sqe(ring_v);
+        if (sqe)
+        {
             memset(sqe, 0, sizeof(*sqe));
             sqe->opcode = IORING_OP_ASYNC_CANCEL;
             sqe->fd = fd;
-            sqe->off = IORING_ASYNC_CANCEL_FD |
-                       IORING_ASYNC_CANCEL_ALL;
+            sqe->cancel_flags = IORING_ASYNC_CANCEL_FD |
+                                IORING_ASYNC_CANCEL_ALL;
             sqe->user_data = 0;
-            ui_uring_submit(v);
+            ui_uring_submit(ring_v);
         }
     }
 
-    /* 不等残留 CQE：内存归 drain 兜底释放，本调用立即返回首个结果 */
+    /* 不等残留 CQE：caller 与 ring 各持一个 reference，最后一个 CQE
+     * 或本调用者退出时释放。 */
+    pthread_spin_lock(&b->lock);
     b->active = 0;
     int got = b->count;
-    if ((unsigned)got >= b->total)
-        free(b);   /* 该批已全部收割，无后续 tagged CQE，就地释放 */
+    pthread_spin_unlock(&b->lock);
+    if (__atomic_sub_fetch(&b->refs, 1, __ATOMIC_ACQ_REL) == 0)
+    {
+        pthread_spin_destroy(&b->lock);
+#ifdef UI_DEBUG_RECVBATCH
+        __atomic_fetch_sub(&ui_debug_recvbatch_live, 1, __ATOMIC_RELAXED);
+#endif
+        free(b);
+    }
     return got;
 }

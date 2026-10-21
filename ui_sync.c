@@ -2,6 +2,20 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+
+/* A contended park requires a goro.  Silently returning without the lock
+ * corrupts ownership (and RUnlock then decrements a lock nobody holds), so
+ * make misuse loud instead.  Uncontended fast paths still work from any
+ * thread. */
+static void
+ui_sync_no_goro_fatal(void)
+{
+    static const char msg[] =
+        "\nui: fatal: contended sync operation from a non-goro thread\n";
+    write(2, msg, sizeof(msg) - 1);
+    _exit(1);
+}
 
 /* ── Ticket spinlock (used by Cond and RWLock) ── */
 
@@ -79,7 +93,8 @@ ui_MutexLock(uint64_t mh)
     /* Contended: park goroutine - protect waitq with spinlock */
     ui_vCPU *v = ui_this_vcpu;
     ui_Goro *g = v ? v->current : NULL;
-    if (!v || !g) return;
+    if (!v || !g)
+        ui_sync_no_goro_fatal();
 
     g->state = UI_WAITING;
     spin_lock(&m->splock);
@@ -195,7 +210,8 @@ ui_CondWait(uint64_t ch, uint64_t mh)
     if (!c || !m) return;
 
     ui_vCPU *v = ui_this_vcpu;
-    if (!v || !v->current) return;
+    if (!v || !v->current)
+        ui_sync_no_goro_fatal();
     ui_Goro *g = v->current;
 
     /* Queue on the cond before releasing the mutex to avoid lost wakeups. */
@@ -382,7 +398,7 @@ ui_RwLockRLock(uint64_t rwh)
             else
             {
                 spin_unlock(&rw->splock);
-                return;
+                ui_sync_no_goro_fatal();
             }
         }
     }
@@ -449,7 +465,7 @@ ui_RwLockWLock(uint64_t rwh)
             else
             {
                 spin_unlock(&rw->splock);
-                return;
+                ui_sync_no_goro_fatal();
             }
             continue;
         }
@@ -468,7 +484,7 @@ ui_RwLockWLock(uint64_t rwh)
             else
             {
                 spin_unlock(&rw->splock);
-                return;
+                ui_sync_no_goro_fatal();
             }
             continue;
         }
@@ -498,7 +514,7 @@ ui_RwLockWLock(uint64_t rwh)
             else
             {
                 spin_unlock(&rw->splock);
-                return;
+                ui_sync_no_goro_fatal();
             }
             continue;
         }
@@ -515,7 +531,7 @@ ui_RwLockWLock(uint64_t rwh)
         else
         {
             spin_unlock(&rw->splock);
-            return;
+            ui_sync_no_goro_fatal();
         }
     }
 }
