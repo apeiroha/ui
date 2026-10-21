@@ -190,6 +190,14 @@ $(BUILD_DIR)/test_polladd_degraded: $(TEST_POLLADD_SRC) $(UI_SRC) $(UI_ASM) $(BU
 test-polladd-degraded: $(BUILD_DIR)/test_polladd_degraded
 	timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_polladd_degraded
 
+TEST_AUDIT_SRC = tests/test_audit.c
+
+$(BUILD_DIR)/test_audit: $(TEST_AUDIT_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
+	$(CC) $(UI_CFLAGS) -DUI_DEBUG_FOREIGN_DRAIN -DUI_DEBUG_RECVBATCH -I. -o $@ $^ $(LDFLAGS) $(_LIB)
+
+test-audit: $(BUILD_DIR)/test_audit
+	timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_audit
+
 # ── Benchmarks ──
 $(BUILD_DIR)/bench_ui: tests/bench_ui.c $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
 	$(CC) $(UI_CFLAGS) -I. -o $@ $^ $(LDFLAGS) $(_LIB)
@@ -239,12 +247,13 @@ bench-ui-perf:
 # ── Aggregate ──
 .PHONY: all test test-ui test-c8-race test-p0 test-p0-asan test-udp-echo \
         test-sched-iopark test-spawn-steal test-lifo-slot test-stack-overflow \
-        test-polladd-degraded \
+        test-polladd-degraded test-audit \
         bench-ui bench-ui-io bench-json bench-build \
         web-install web-build web-test libui clean
 
 test: test-ui test-c8-race test-p0 test-udp-echo test-sched-iopark \
-       test-spawn-steal test-idle-wait test-stack-overflow test-polladd-degraded
+       test-spawn-steal test-idle-wait test-stack-overflow test-polladd-degraded \
+       test-audit
 
 all: libui
 

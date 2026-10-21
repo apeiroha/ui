@@ -125,7 +125,7 @@ ui_runq_empty(ui_vCPU *v)
     return atomic_load(&v->runq_count) == 0;
 }
 
-static void
+void
 ui_wake_vcpu(ui_vCPU *v)
 {
     if (!v || v->event_fd < 0)
@@ -179,8 +179,9 @@ ui_drain_standbyq(ui_vCPU *v)
         head->standby_next = NULL;
         if (head->state == UI_READY)
         {
-            if (head->sleepq_idx >= 0)
-                ui_sleepq_remove(v, head);
+            if (atomic_load_explicit(&head->sleepq_vcpu,
+                                     memory_order_relaxed) >= 0)
+                ui_sleepq_remove(head);
             ui_dbg_deliver(head, v->id, 1);
             ui_runq_insert(v, head);
         }
@@ -245,38 +246,19 @@ sleepq_sift_down(ui_vCPU *v, int idx)
     }
 }
 
-int
-ui_sleepq_push(ui_vCPU *v, ui_Goro *g, uint64_t deadline_us)
+static void
+sleepq_meta_update(ui_vCPU *v)
 {
-    if (v->sleepq_size >= 256)
-        return -1;
-    g->wakeup_time = deadline_us;
-    g->sleepq_idx = v->sleepq_size;
-    v->sleepq[v->sleepq_size] = g;
-    v->sleepq_size++;
-    sleepq_sift_up(v, g->sleepq_idx);
-    return 0;
+    atomic_store_explicit(&v->sleepq_len, v->sleepq_size,
+                          memory_order_relaxed);
+    uint64_t top = v->sleepq_size > 0 ? v->sleepq[0]->wakeup_time
+                                      : UINT64_MAX;
+    atomic_store_explicit(&v->sleepq_top_us, top, memory_order_relaxed);
 }
 
-void
-ui_sleepq_remove(ui_vCPU *v, ui_Goro *g)
-{
-    int idx = g->sleepq_idx;
-    if (idx < 0 || idx >= v->sleepq_size || v->sleepq[idx] != g)
-        return;
-    v->sleepq_size--;
-    if (idx < v->sleepq_size)
-    {
-        v->sleepq[idx] = v->sleepq[v->sleepq_size];
-        v->sleepq[idx]->sleepq_idx = idx;
-        sleepq_sift_down(v, idx);
-        sleepq_sift_up(v, idx);
-    }
-    g->sleepq_idx = -1;
-}
-
-ui_Goro *
-ui_sleepq_pop(ui_vCPU *v)
+/* Caller holds v->sleepq_lock. */
+static ui_Goro *
+sleepq_pop_locked(ui_vCPU *v)
 {
     if (v->sleepq_size == 0)
         return NULL;
@@ -289,20 +271,96 @@ ui_sleepq_pop(ui_vCPU *v)
         sleepq_sift_down(v, 0);
     }
     g->sleepq_idx = -1;
+    atomic_store_explicit(&g->sleepq_vcpu, -1, memory_order_relaxed);
+    return g;
+}
+
+int
+ui_sleepq_push(ui_vCPU *v, ui_Goro *g, uint64_t deadline_us)
+{
+    pthread_spin_lock(&v->sleepq_lock);
+    if (v->sleepq_size >= 256)
+    {
+        pthread_spin_unlock(&v->sleepq_lock);
+        return -1;
+    }
+    g->wakeup_time = deadline_us;
+    g->sleepq_idx = v->sleepq_size;
+    atomic_store_explicit(&g->sleepq_vcpu, v->id, memory_order_release);
+    v->sleepq[v->sleepq_size] = g;
+    v->sleepq_size++;
+    sleepq_sift_up(v, g->sleepq_idx);
+    sleepq_meta_update(v);
+    pthread_spin_unlock(&v->sleepq_lock);
+    return 0;
+}
+
+void
+ui_sleepq_remove(ui_Goro *g)
+{
+    int sv = atomic_load_explicit(&g->sleepq_vcpu, memory_order_acquire);
+    if (sv < 0 || sv >= g_ui_sched.nvcpus)
+        return;
+
+    ui_vCPU *v = &g_ui_sched.vcpus[sv];
+    pthread_spin_lock(&v->sleepq_lock);
+    int idx = g->sleepq_idx;
+    if (idx < 0 || idx >= v->sleepq_size || v->sleepq[idx] != g)
+    {
+        pthread_spin_unlock(&v->sleepq_lock);
+        return;
+    }
+    v->sleepq_size--;
+    if (idx < v->sleepq_size)
+    {
+        v->sleepq[idx] = v->sleepq[v->sleepq_size];
+        v->sleepq[idx]->sleepq_idx = idx;
+        sleepq_sift_down(v, idx);
+        sleepq_sift_up(v, idx);
+    }
+    g->sleepq_idx = -1;
+    atomic_store_explicit(&g->sleepq_vcpu, -1, memory_order_relaxed);
+    sleepq_meta_update(v);
+    pthread_spin_unlock(&v->sleepq_lock);
+}
+
+ui_Goro *
+ui_sleepq_pop(ui_vCPU *v)
+{
+    pthread_spin_lock(&v->sleepq_lock);
+    ui_Goro *g = sleepq_pop_locked(v);
+    sleepq_meta_update(v);
+    pthread_spin_unlock(&v->sleepq_lock);
     return g;
 }
 
 int
 ui_sleepq_expire(ui_vCPU *v, uint64_t now_us)
 {
-    int count = 0;
+    ui_Goro *ready[256];
+    int n = 0, count = 0;
+
+    pthread_spin_lock(&v->sleepq_lock);
     while (v->sleepq_size > 0 && v->sleepq[0]->wakeup_time <= now_us)
     {
-        ui_Goro *g = ui_sleepq_pop(v);
-        g->state = UI_READY;
-        ui_dbg_deliver(g, v->id, 2);
-        ui_runq_insert(v, g);
-        count++;
+        ready[n++] = sleepq_pop_locked(v);
+        if (n == 256)
+            break;
+    }
+    sleepq_meta_update(v);
+    pthread_spin_unlock(&v->sleepq_lock);
+
+    /* A concurrent waker may have already readied the goro and queued it
+     * on its home vCPU; only enqueue if we win the WAITING->READY race. */
+    for (int i = 0; i < n; i++)
+    {
+        ui_Goro *g = ready[i];
+        if (__sync_bool_compare_and_swap(&g->state, UI_WAITING, UI_READY))
+        {
+            ui_dbg_deliver(g, v->id, 2);
+            ui_runq_insert(v, g);
+            count++;
+        }
     }
     return count;
 }
@@ -437,8 +495,12 @@ ui_steal_work(ui_vCPU *v)
                     __builtin_ia32_pause();
         }
 
-        pthread_spin_lock(&vic->runq_lock);
-        pthread_spin_lock(&v->runq_lock);
+        /* Re-lock in vCPU-id order: two stealers can otherwise take each
+         * other's runq_lock in victim->self order and deadlock (ABBA). */
+        ui_vCPU *lo = v->id < vic->id ? v : vic;
+        ui_vCPU *hi = lo == v ? vic : v;
+        pthread_spin_lock(&lo->runq_lock);
+        pthread_spin_lock(&hi->runq_lock);
 
         ui_Goro *rn = vic->runnext;
         if (!ui_runq_empty(v) || !rn || rn->pinned)
@@ -539,6 +601,7 @@ ui_goro_recycle(ui_Goro *cg)
         cg->stack_slot = ss;
         cg->page_size = ps;
         cg->sleepq_idx = -1;
+        atomic_store(&cg->sleepq_vcpu, -1);
         cg->io_token = tok + 1;   /* 代际 +1：新世可被日志区分 */
         cg->state = UI_DEAD;   /* pooled goros must never look READY to stale wakes */
         v->goro_pool[v->goro_pool_count] = cg;
@@ -583,6 +646,7 @@ ui_goro_recycle(ui_Goro *cg)
         cg->stack_slot = ss;
         cg->page_size = ps;
         cg->sleepq_idx = -1;
+        atomic_store(&cg->sleepq_vcpu, -1);
         cg->io_token = tok + 1;   /* 代际 +1 */
         cg->state = UI_DEAD;   /* pooled goros must never look READY to stale wakes */
         g_ui_sched.goro_pool[g_ui_sched.goro_pool_count] = cg;
@@ -625,11 +689,13 @@ ui_schedule(void)
 
     /* Drain standbyq (process cross-vCPU wakers/steals) */
     ui_drain_standbyq(v);
+    if (atomic_load_explicit(&v->rm_closeq_len, memory_order_relaxed) > 0)
+        ui_recvmulti_process_closeq(v);
 
     /* Expire sleepers so they become runnable (needed here, not just in idle
      * loop, to avoid deadlock when sleepq is full and no goroutine goes idle).
      * Skip clock read if sleepq is empty to avoid vDSO overhead. */
-    if (v->sleepq_size > 0)
+    if (atomic_load_explicit(&v->sleepq_len, memory_order_relaxed) > 0)
         ui_sleepq_expire(v, ui_now_us());
     if (v->uring_pending > 0 || v->has_multishot)
     {
@@ -955,6 +1021,11 @@ ui_Init(void)
         v->bgid = -1;
         v->event_fd = eventfd(0, EFD_NONBLOCK);
         pthread_spin_init(&v->runq_lock, PTHREAD_PROCESS_PRIVATE);
+        pthread_spin_init(&v->sleepq_lock, PTHREAD_PROCESS_PRIVATE);
+        pthread_spin_init(&v->rm_closeq_lock, PTHREAD_PROCESS_PRIVATE);
+        atomic_store(&v->rm_closeq_len, 0);
+        atomic_store(&v->sleepq_len, 0);
+        atomic_store(&v->sleepq_top_us, UINT64_MAX);
         ui_runq_init(v);
         ui_standbyq_init(v);
         atomic_store(&v->idle, 0);
@@ -967,6 +1038,7 @@ ui_Init(void)
         ui_Goro *g = calloc(1, sizeof(ui_Goro));
         if (!g) break;
         g->sleepq_idx = -1;
+        atomic_store(&g->sleepq_vcpu, -1);
         if (ui_stack_init(g, UI_STACK_INIT) < 0) { free(g); break; }
         g_ui_sched.goro_pool[i] = g;
         g_ui_sched.goro_pool_count = i + 1;
@@ -983,6 +1055,8 @@ ui_Fini(void)
     for (int i = 0; i < g_ui_sched.nvcpus; i++)
     {
         atomic_store(&g_ui_sched.vcpus[i].running, 0);
+        pthread_spin_destroy(&g_ui_sched.vcpus[i].sleepq_lock);
+        pthread_spin_destroy(&g_ui_sched.vcpus[i].rm_closeq_lock);
         if (g_ui_sched.vcpus[i].event_fd >= 0)
             close(g_ui_sched.vcpus[i].event_fd);
         /* Free active multishot recvs */
@@ -1091,6 +1165,7 @@ ui_goro_alloc(ui_Func0 entry, void *arg, int stack_size)
         g = calloc(1, sizeof(ui_Goro));
         if (!g) return NULL;
         g->sleepq_idx = -1;
+        atomic_store(&g->sleepq_vcpu, -1);
         if (ui_stack_init(g, stack_size) < 0) { free(g); return NULL; }
     }
 
@@ -1346,7 +1421,10 @@ ui_SleepUs(unsigned int us)
         g->state = UI_READY;
         g->voluntary = 1;
         ui_switch(&g->rsp, v->sched_rsp);
-        /* Woken up — retry sleep */
+        v = ui_get_vcpu();
+        if (!v || !v->current)
+            return;
+        g = v->current;
         deadline = ui_now_us() + us;
     }
 
@@ -1368,10 +1446,13 @@ ui_wake_enqueue(ui_Goro *g)
 
     ui_vCPU *v_target = &g_ui_sched.vcpus[target];
 
+    /* The sleep queue may belong to a different vCPU than the wake
+     * destination (PinTo); remove under the owner's lock first. */
+    if (atomic_load_explicit(&g->sleepq_vcpu, memory_order_relaxed) >= 0)
+        ui_sleepq_remove(g);
+
     if (ui_get_vcpu_id() == target)
     {
-        if (g->sleepq_idx >= 0)
-            ui_sleepq_remove(v_target, g);
         /* Same-vCPU wakeup feeds the LIFO slot ("whoever woke me runs
          * next"), unless the goro is pinned to its first placement. */
         ui_vCPU *cur = ui_this_vcpu;
@@ -1448,6 +1529,9 @@ ui_vcpu_idle(ui_vCPU *v)
     if (!ui_runq_empty(v)) return;
     if (ui_steal_work(v)) return;
 
+    if (atomic_load_explicit(&v->rm_closeq_len, memory_order_relaxed) > 0)
+        ui_recvmulti_process_closeq(v);
+
     /* Drain io_uring completions if any are pending */
     if (v->uring_pending > 0 || v->has_multishot) {
         ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
@@ -1474,9 +1558,11 @@ ui_vcpu_idle(ui_vCPU *v)
     if (v->ring_fd >= 0 && !v->cq_eventfd)
         wait_us = 1000;
 
-    if (v->sleepq_size > 0 && v->sleepq[0]->wakeup_time > now)
+    uint64_t top_us = atomic_load_explicit(&v->sleepq_top_us,
+                                           memory_order_relaxed);
+    if (top_us != UINT64_MAX && top_us > now)
     {
-        uint64_t delta = v->sleepq[0]->wakeup_time - now;
+        uint64_t delta = top_us - now;
         if (delta > 10000000) delta = 10000000;
         if (delta < wait_us)
             wait_us = delta;
