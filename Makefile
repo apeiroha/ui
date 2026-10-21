@@ -198,6 +198,14 @@ $(BUILD_DIR)/test_audit: $(TEST_AUDIT_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/star
 test-audit: $(BUILD_DIR)/test_audit
 	timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_audit
 
+TEST_CYCLE_SRC = tests/test_cycle_stress.c
+
+$(BUILD_DIR)/test_cycle_stress: $(TEST_CYCLE_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
+	$(CC) $(UI_CFLAGS) -I. -o $@ $^ $(LDFLAGS) $(_LIB)
+
+test-cycle-stress: $(BUILD_DIR)/test_cycle_stress
+	timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_cycle_stress
+
 # ── Benchmarks ──
 $(BUILD_DIR)/bench_ui: tests/bench_ui.c $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
 	$(CC) $(UI_CFLAGS) -I. -o $@ $^ $(LDFLAGS) $(_LIB)
@@ -247,13 +255,13 @@ bench-ui-perf:
 # ── Aggregate ──
 .PHONY: all test test-ui test-c8-race test-p0 test-p0-asan test-udp-echo \
         test-sched-iopark test-spawn-steal test-lifo-slot test-stack-overflow \
-        test-polladd-degraded test-audit \
+        test-polladd-degraded test-audit test-cycle-stress \
         bench-ui bench-ui-io bench-json bench-build \
         web-install web-build web-test libui clean
 
 test: test-ui test-c8-race test-p0 test-udp-echo test-sched-iopark \
        test-spawn-steal test-idle-wait test-stack-overflow test-polladd-degraded \
-       test-audit
+       test-audit test-cycle-stress
 
 all: libui
 
