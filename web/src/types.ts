@@ -40,8 +40,15 @@ export interface StatsMap {
 
 /** The A/B verdict for one metric, computed by the collector. */
 export interface MetricVerdict {
-  verdict: "improved" | "regressed" | "unchanged" | "noisy";
+  /**
+   * "negligible" means the difference is statistically significant but
+   * smaller than the practical threshold: a metric whose samples are
+   * very tight reports a 1% change as significant, and that is noise,
+   * not a finding.
+   */
+  verdict: "improved" | "regressed" | "negligible" | "unchanged" | "noisy";
   significant: boolean;
+  material: boolean;
   p: number;
   delta_pct: number;
   base_p50: number;

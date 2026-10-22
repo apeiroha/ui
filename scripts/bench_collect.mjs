@@ -301,6 +301,7 @@ function compareSides(baseAcc, headAcc) {
     verdict[group][name] = {
       verdict: c.verdict,
       significant: c.significant,
+      material: c.material,
       p: c.p,
       delta_pct: c.delta_pct,
       base_p50: c.a.p50,

@@ -22,11 +22,12 @@ import process from "node:process";
 import { compare, medianCI, summarize } from "./bench_stats.mjs";
 
 function parseArgs(argv) {
-  const opts = { files: [], markdown: false, alpha: 0.05, minSamples: 10 };
+  const opts = { files: [], markdown: false, alpha: 0.05, minSamples: 10, threshold: 5 };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--markdown") opts.markdown = true;
     else if (argv[i] === "--alpha") opts.alpha = Number(argv[++i]);
     else if (argv[i] === "--min-samples") opts.minSamples = Number(argv[++i]);
+    else if (argv[i] === "--threshold") opts.threshold = Number(argv[++i]);
     else opts.files.push(argv[i]);
   }
   return opts;
@@ -142,6 +143,7 @@ function textOutput(base, head, opts) {
   const changed = rows.filter((r) => r.cmp && r.cmp.significant);
   const regressed = changed.filter((r) => r.cmp.verdict === "regressed");
   const improved = changed.filter((r) => r.cmp.verdict === "improved");
+  const negligible = changed.filter((r) => r.cmp.verdict === "negligible");
   const noisy = rows.filter((r) => r.cmp && r.cmp.verdict === "noisy");
   const fewSamples = rows.filter(
     (r) => r.cmp && (r.cmp.n_a < opts.minSamples || r.cmp.n_b < opts.minSamples),
@@ -150,8 +152,16 @@ function textOutput(base, head, opts) {
   lines.push("");
   lines.push(
     `${rows.length} metric(s) compared: ${improved.length} improved, ` +
-      `${regressed.length} regressed, ${rows.length - changed.length} unchanged`,
+      `${regressed.length} regressed, ${negligible.length} changed but below ` +
+      `${opts.threshold}%, ${rows.length - changed.length} unchanged`,
   );
+  if (negligible.length) {
+    lines.push(
+      `  (${negligible.length} difference(s) are statistically significant but ` +
+        `smaller than ${opts.threshold}% - a metric whose samples are very tight ` +
+        `reports a 1% change as significant, which is noise, not a finding)`,
+    );
+  }
   if (noisy.length) {
     lines.push(
       `  (${noisy.length} of the changes are in metrics whose samples vary by ` +
@@ -204,6 +214,7 @@ function markdownOutput(base, head, opts) {
     if (!c.significant) verdict = "no significant change";
     else if (c.verdict === "regressed") verdict = "**regressed**";
     else if (c.verdict === "improved") verdict = "**improved**";
+    else if (c.verdict === "negligible") verdict = `changed, but below ${opts.threshold}%`;
     else verdict = "changed, but noisy";
     out.push(
       `| ${r.name} | ${fmt(r.base.p50)} ${r.unit} | ${fmt(r.head.p50)} ${r.unit} | ` +
@@ -214,10 +225,12 @@ function markdownOutput(base, head, opts) {
   const changed = rows.filter((r) => r.cmp && r.cmp.significant);
   const regressed = changed.filter((r) => r.cmp.verdict === "regressed");
   const improved = changed.filter((r) => r.cmp.verdict === "improved");
+  const negligible = changed.filter((r) => r.cmp.verdict === "negligible");
   out.push("");
   out.push(
     `${rows.length} metric(s) compared · ${improved.length} improved · ` +
-      `${regressed.length} regressed · ${rows.length - changed.length} unchanged`,
+      `${regressed.length} regressed · ${negligible.length} changed but below ` +
+      `${opts.threshold}% · ${rows.length - changed.length} unchanged`,
   );
   return out.join("\n");
 }

@@ -349,6 +349,7 @@ describe("the A/B verdict", () => {
         "goroutine spawn+exit": {
           verdict: "improved",
           significant: true,
+          material: true,
           p: 0.0001,
           delta_pct: -19.2,
           base_p50: 8670,
@@ -370,6 +371,25 @@ describe("the A/B verdict", () => {
     expect(verdictLabel(verdictOf(verdictRun, "bench_ui", "goroutine spawn+exit")).cls).toBe("good");
     const bad = { ...verdictRun, verdict: { bench_ui: { "goroutine spawn+exit": { ...verdictRun.verdict!.bench_ui["goroutine spawn+exit"], verdict: "regressed" as const } } } };
     expect(verdictLabel(verdictOf(bad, "bench_ui", "goroutine spawn+exit")).cls).toBe("bad");
+  });
+
+  it("a significant but tiny difference is below the practical threshold", () => {
+    const small = {
+      ...verdictRun,
+      verdict: {
+        bench_ui: {
+          "goroutine spawn+exit": {
+            ...verdictRun.verdict!.bench_ui["goroutine spawn+exit"],
+            verdict: "negligible" as const,
+            material: false,
+            delta_pct: 1.5,
+          },
+        },
+      },
+    };
+    const l = verdictLabel(verdictOf(small, "bench_ui", "goroutine spawn+exit"));
+    expect(l.text).toBe("below the threshold");
+    expect(l.cls).toBe("flat");
   });
 
   it("a difference the test cannot separate from noise is not significant", () => {

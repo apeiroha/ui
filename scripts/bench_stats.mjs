@@ -177,23 +177,31 @@ export function mannWhitney(a, b) {
  * Compare two samples.
  *
  * `alpha` is the significance threshold (0.05, like benchstat's
- * default).  The verdict is one of:
- *   "improved"  - the second sample is significantly lower
- *   "regressed" - the second sample is significantly higher
+ * default) and `thresholdPct` the practical one: a difference has to
+ * be both statistically significant and big enough to matter.  Without
+ * the second one a metric whose samples are very tight (a syscall
+ * costs the same every time) reports a 1% difference as a regression,
+ * which is noise dressed up as a finding.
+ *
+ * The verdict is one of:
+ *   "improved"  - significantly and materially lower
+ *   "regressed" - significantly and materially higher
+ *   "negligible" - statistically different, but below the threshold
  *   "unchanged" - no significant difference
  *   "noisy"     - either side is too noisy to draw a conclusion
  */
-export function compare(a, b, { alpha = 0.05, noiseCvPct = 10 } = {}) {
+export function compare(a, b, { alpha = 0.05, noiseCvPct = 10, thresholdPct = 5 } = {}) {
   const sa = summarize(a);
   const sb = summarize(b);
   const mw = mannWhitney(a, b);
-  const base = sb.p50 > 0 ? sa.p50 : 0;
-  const deltaPct = base > 0 ? ((sb.p50 - sa.p50) / sa.p50) * 100 : 0;
+  const deltaPct = sa.p50 > 0 ? ((sb.p50 - sa.p50) / sa.p50) * 100 : 0;
   const tooNoisy = sa.cv_pct > noiseCvPct || sb.cv_pct > noiseCvPct;
   const significant = mw.p < alpha;
+  const material = Math.abs(deltaPct) >= thresholdPct;
 
   let verdict;
   if (!significant) verdict = "unchanged";
+  else if (!material) verdict = "negligible";
   else if (sb.p50 < sa.p50) verdict = "improved";
   else verdict = "regressed";
   if (tooNoisy && verdict !== "unchanged") verdict = "noisy";
@@ -201,6 +209,7 @@ export function compare(a, b, { alpha = 0.05, noiseCvPct = 10 } = {}) {
   return {
     verdict,
     significant,
+    material,
     p: mw.p,
     effect: mw.effect,
     delta_pct: deltaPct,

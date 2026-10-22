@@ -263,5 +263,6 @@ export function verdictLabel(
   if (!v.significant) return { text: "not significant", cls: "flat" };
   if (v.verdict === "improved") return { text: "improved", cls: "good" };
   if (v.verdict === "regressed") return { text: "regressed", cls: "bad" };
+  if (v.verdict === "negligible") return { text: "below the threshold", cls: "flat" };
   return { text: "noisy", cls: "flat" };
 }
