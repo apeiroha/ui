@@ -60,6 +60,17 @@ void
 ui_Run(void)
 {
     if (g_ui_sched.nvcpus == 0) return;
+    if (atomic_load(&g_ui_sched.started))
+        return;   /* a run is already in progress */
+
+    /* Re-arm the vCPUs.  A vCPU stops itself (running = 0) when the last
+     * goroutine retires, and ui_Run() additionally clears the flag for
+     * the helper threads it joins.  Without re-arming, a second
+     * ui_Run() would start threads that immediately exit and the
+     * goroutines spawned in between would never run. */
+    for (int i = 0; i < g_ui_sched.nvcpus; i++)
+        atomic_store(&g_ui_sched.vcpus[i].running, 1);
+
     atomic_store(&g_ui_sched.started, 1);
     g_ui_sched.vcpus[0].thread = pthread_self();
     ui_this_vcpu = &g_ui_sched.vcpus[0];
