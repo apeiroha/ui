@@ -14,6 +14,41 @@ int      ui_Init(void);
 void     ui_Run(void);
 void     ui_Fini(void);
 
+/* ── Stack memory policy ──
+ *
+ * A goroutine's stack is 8MB of address space; how much of it is
+ * actually resident is a policy choice:
+ *
+ *   UI_STACK_TRIM_NONE     keep the pages.  Fastest recycle, the
+ *                           resident set follows the goroutine pool.
+ *   UI_STACK_TRIM_FREE     MADV_FREE (default): pages are marked free
+ *                           and reclaimed lazily by the kernel.
+ *   UI_STACK_TRIM_DONTNEED MADV_DONTNEED: pages are unmapped at once,
+ *                           the resident set tracks the live set.
+ *
+ * The trade-off is direct: the fast policies leave pages resident (that
+ * is why they are fast), the strict one costs a TLB shootdown per
+ * recycle.  Measured on 4 vCPU (steady-state spawn of 200k goroutines):
+ * FREE ~2000 ns/op with a ~23MB resident set, DONTNEED ~3350 ns/op with
+ * ~2.7MB.
+ *
+ * ui_SetStackMemoryLimit() adds a second knob: it caps how much stack
+ * memory the goroutine pool may keep.  A limit of 0 means "no cap" and
+ * leaves the policy alone; a non-zero limit switches to the strict
+ * policy and makes the pool drop (and unmap) stacks once the budget is
+ * exhausted.  Stacks of *live* goroutines are not covered by the cap.
+ */
+typedef enum {
+    UI_STACK_TRIM_NONE     = 0,
+    UI_STACK_TRIM_FREE     = 1,
+    UI_STACK_TRIM_DONTNEED = 2,
+} ui_StackTrimPolicy;
+
+int         ui_SetStackTrimPolicy(ui_StackTrimPolicy policy);
+int         ui_GetStackTrimPolicy(void);
+int         ui_SetStackMemoryLimit(size_t bytes);
+size_t      ui_StackMemoryLimit(void);
+
 uint64_t ui_Go(ui_Func0 f);
 uint64_t ui_GoSized(ui_Func0 f, int stack_size);
 uint64_t ui_Go1(void *fn, uintptr_t arg);

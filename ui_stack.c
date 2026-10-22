@@ -159,6 +159,13 @@ ui_stack_destroy(ui_Goro *g)
     {
         if (!g_ui_sched.finalizing)
         {
+            /* A memory budget means "memory first": the slot is about to
+             * be handed to a different goroutine, so its pages are
+             * returned instead of being kept warm in the arena.
+             * Without a budget the slot keeps its pages - reusing them
+             * is faster than faulting them back in. */
+            if (ui_stack_memory_limit)
+                ui_stack_hard_trim(g);
             /* Keep the slot's pages warm; slot_commit records how much
              * is actually RW so a larger reuse re-mprotects the delta. */
             pthread_mutex_lock(&g_ui_sched.stack_arena_lock);

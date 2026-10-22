@@ -87,25 +87,21 @@ struct ui_RecvMulti
 extern uint32_t ui_yield_io_mask;
 
 /* Stack trim policy: what happens to a goroutine's stack pages when the
- * goroutine goes back to the pool.
+ * goroutine goes back to the pool.  The policy itself (and the public
+ * API around it) lives in ui.h; this is only the internal state.
  *
- *   NONE     - keep the pages.  Fastest recycle, RSS grows to the
- *              high-water mark of live goroutines.
- *   FREE     - MADV_FREE: the pages are marked free and reclaimed lazily
- *              (by the kernel under memory pressure).  No TLB shootdown,
- *              so recycling is ~40% cheaper than DONTNEED; RSS behaves
- *              like a high-water mark.
- *   DONTNEED - MADV_DONTNEED: the pages are unmapped immediately.  Lowest
- *              RSS, but every recycle pays a TLB shootdown to all CPUs.
- *
- * Overridable via env UI_STACK_TRIM (0/1/2) at ui_Init() time. */
-typedef enum {
-    UI_STACK_TRIM_NONE     = 0,
-    UI_STACK_TRIM_FREE     = 1,
-    UI_STACK_TRIM_DONTNEED = 2,
-} ui_StackTrimPolicy;
+ * Overridable via env UI_STACK_TRIM (0/1/2) at ui_Init() time, or at
+ * runtime through ui_SetStackTrimPolicy(). */
 #define UI_STACK_TRIM_DEFAULT  UI_STACK_TRIM_FREE
 extern int ui_stack_trim_policy;
+
+/* Cap on the stack memory the goroutine pool may keep (bytes).  0 = no
+ * cap.  A non-zero cap also switches the trim policy to the strict
+ * one (MADV_DONTNEED) and makes the pool unmap stacks once the budget
+ * is exhausted.  Overridable via env UI_STACK_MEMORY_LIMIT. */
+extern unsigned long long ui_stack_memory_limit;
+/* Estimated resident bytes held by the pooled goroutine stacks. */
+extern unsigned long long ui_stack_pool_bytes;
 
 /* How many recycles happen between two hard trims (MADV_DONTNEED) of the
  * per-vCPU pool.  HARD trims are what keep the resident set of pooled

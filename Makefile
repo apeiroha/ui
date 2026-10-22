@@ -214,6 +214,14 @@ $(BUILD_DIR)/test_spawn_api: $(TEST_SPAWN_API_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_D
 test-spawn-api: $(BUILD_DIR)/test_spawn_api
 	timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_spawn_api
 
+TEST_STACK_POLICY_SRC = tests/test_stack_policy.c
+
+$(BUILD_DIR)/test_stack_policy: $(TEST_STACK_POLICY_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
+	$(CC) $(UI_CFLAGS) -I. -o $@ $^ $(LDFLAGS) $(_LIB)
+
+test-stack-policy: $(BUILD_DIR)/test_stack_policy
+	timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_stack_policy
+
 TEST_RUN_REENTRANT_SRC = tests/test_run_reentrant.c
 
 $(BUILD_DIR)/test_run_reentrant: $(TEST_RUN_REENTRANT_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
@@ -272,13 +280,14 @@ bench-ui-perf:
 .PHONY: all test test-ui test-c8-race test-p0 test-p0-asan test-udp-echo \
         test-sched-iopark test-spawn-steal test-lifo-slot test-stack-overflow \
         test-polladd-degraded test-audit test-cycle-stress test-spawn-api \
-        test-run-reentrant \
+        test-run-reentrant test-stack-policy \
         bench-ui bench-ui-io bench-json bench-build \
         web-install web-build web-test libui clean
 
 test: test-ui test-c8-race test-p0 test-udp-echo test-sched-iopark \
        test-spawn-steal test-idle-wait test-stack-overflow test-polladd-degraded \
-       test-audit test-cycle-stress test-spawn-api test-run-reentrant
+       test-audit test-cycle-stress test-spawn-api test-run-reentrant \
+       test-stack-policy
 
 all: libui
 
