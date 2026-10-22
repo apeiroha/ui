@@ -21,7 +21,7 @@ import { existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from "no
 import { cpus, tmpdir, release } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
-import { summarize } from "./bench_stats.mjs";
+import { compare, summarize } from "./bench_stats.mjs";
 import { collectSyscalls } from "./bench_syscalls.mjs";
 
 const GROUPS = [
@@ -288,6 +288,31 @@ function collectPair(headDir, baseDir, binary, iters, count, attempts) {
   return { head, base };
 }
 
+/* The A/B verdict for every metric both sides measured. */
+function compareSides(baseAcc, headAcc) {
+  const verdict = {};
+  for (const [key, slot] of headAcc) {
+    const base = baseAcc.get(key);
+    if (!base || slot.samples.length === 0 || base.samples.length === 0) continue;
+    const c = compare(base.samples, slot.samples);
+    const group = slot.group;
+    const name = slot.name;
+    verdict[group] = verdict[group] || {};
+    verdict[group][name] = {
+      verdict: c.verdict,
+      significant: c.significant,
+      p: c.p,
+      delta_pct: c.delta_pct,
+      base_p50: c.a.p50,
+      head_p50: c.b.p50,
+      base_cv_pct: c.a.cv_pct,
+      head_cv_pct: c.b.cv_pct,
+      n: c.n_a + c.n_b,
+    };
+  }
+  return verdict;
+}
+
 function sideInfo(ref, sha, metrics, stats, server, repo) {
   return {
     ref: ref || "local",
@@ -361,6 +386,9 @@ function main() {
   if (ab) {
     const base = sideRecord(baseAcc);
     record.base = sideInfo(opts.baseRef || "base", opts.baseSha, base.metrics, base.stats, server, repo);
+    // The verdict is computed here, once, with the same statistics the
+    // CLI uses - the dashboard only displays it.
+    record.verdict = compareSides(baseAcc, headAcc);
   }
 
   // The syscall counts: a zero-noise signal next to the timings.  They
