@@ -22,6 +22,7 @@ import { cpus, tmpdir, release } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
 import { summarize } from "./bench_stats.mjs";
+import { collectSyscalls } from "./bench_syscalls.mjs";
 
 const GROUPS = [
   ["bench_ui", "bench_ui"],
@@ -39,6 +40,8 @@ function parseArgs(argv) {
     iters: 2,
     count: 6,
     attempts: 8,
+    syscalls: false,
+    probe: 2000,
     out: "bench-output.json",
     ref: "",
     sha: "",
@@ -51,6 +54,8 @@ function parseArgs(argv) {
     else if (argv[i] === "--iters") opts.iters = Number(argv[++i]);
     else if (argv[i] === "--count") opts.count = Number(argv[++i]);
     else if (argv[i] === "--attempts") opts.attempts = Number(argv[++i]);
+    else if (argv[i] === "--syscalls") opts.syscalls = true;
+    else if (argv[i] === "--probe") opts.probe = Number(argv[++i]);
     else if (argv[i] === "--out") opts.out = argv[++i];
     else if (argv[i] === "--ref") opts.ref = argv[++i];
     else if (argv[i] === "--sha") opts.sha = argv[++i];
@@ -356,6 +361,18 @@ function main() {
   if (ab) {
     const base = sideRecord(baseAcc);
     record.base = sideInfo(opts.baseRef || "base", opts.baseSha, base.metrics, base.stats, server, repo);
+  }
+
+  // The syscall counts: a zero-noise signal next to the timings.  They
+  // are only collected for the head - the counts do not depend on the
+  // machine's speed, so there is nothing to compare.
+  if (opts.syscalls) {
+    console.log("counting syscalls (this takes a while: one strace run per benchmark)");
+    record.syscalls = collectSyscalls({
+      binDir: opts.binDir,
+      probe: opts.probe,
+      timeout: 600000,
+    });
   }
 
   writeFileSync(opts.out, JSON.stringify(record, null, 2) + "\n");

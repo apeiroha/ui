@@ -175,6 +175,15 @@ jobs:
           allowed=$(awk '/Cpus_allowed_list/ {print $2}' /proc/self/status)
           taskset -c "$allowed" node scripts/bench_collect.mjs "${args[@]}"
 
+      # The syscall counts: a zero-noise signal next to the timings.  If
+      # a change adds one madvise() to the spawn path, that shows up
+      # here as an exact number while the timing would be lost in the
+      # noise of a shared runner.
+      - name: Count the syscalls
+        run: |
+          node scripts/bench_syscalls.mjs --bin-dir build --probe 2000 \
+            --merge bench-output.json
+
       # The verdict: is the difference between the two builds bigger
       # than the noise?  A non-parametric test (Mann-Whitney U) on the
       # samples, the same method Go's benchstat uses.  The result goes

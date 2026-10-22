@@ -231,8 +231,27 @@ ui_stack_trim_range(ui_Goro *g, int advice)
     }
     if (start >= top)
         return;
+#ifdef UI_DEBUG_STACK_TRIM
+    /* Test hook: what the trim path actually asked the kernel for.
+     * Only compiled in for the tests that assert on it. */
+    ui_debug_trim_calls++;
+    ui_debug_trim_advice = advice;
+    ui_debug_trim_start = (unsigned long)start;
+    ui_debug_trim_len = (unsigned long)(top - start);
+    ui_debug_stack_base = (unsigned long)g->stack_base;
+    ui_debug_stack_committed = (unsigned long)g->stack_committed;
+    ui_debug_stack_low = (unsigned long)g->stack_low;
+#endif
     madvise(start, (size_t)(top - start), advice);
 }
+
+#ifdef UI_DEBUG_STACK_TRIM
+/* Test hook: see ui_internal.h. */
+int ui_debug_trim_calls;
+int ui_debug_trim_advice = -1;
+unsigned long ui_debug_trim_start, ui_debug_trim_len;
+unsigned long ui_debug_stack_base, ui_debug_stack_committed, ui_debug_stack_low;
+#endif
 
 /* Release the physical pages of the committed region; keep the virtual
  * address range.  Called when returning a stack to the pool.

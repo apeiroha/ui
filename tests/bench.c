@@ -310,11 +310,18 @@ run_entry(ui_bench_entry *e)
      * state: without them the first measured sample is systematically
      * slower than the rest (the first spawn batch pays for growing the
      * arena and the heap), which shows up as a trend across the
-     * samples rather than as random noise. */
-    for (int w = 0; w < 2; w++)
-        run_sample(e, n, &out);
+     * samples rather than as random noise.
+     *
+     * The syscall probe skips them: it counts the syscalls of exactly
+     * one round, so the counts are per operation. */
+    int probe = g_opt_probe_n > 0;
+    if (!probe)
+    {
+        for (int w = 0; w < 2; w++)
+            run_sample(e, n, &out);
+    }
 
-    int reps = once ? 1 : g_opt_count;
+    int reps = (once || probe) ? 1 : g_opt_count;
     for (int i = 0; i < reps && e->nsamples < UI_BENCH_MAX_SAMPLES; i++)
     {
         run_sample(e, n, &out);

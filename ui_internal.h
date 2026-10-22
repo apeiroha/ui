@@ -348,6 +348,16 @@ int           ui_stack_init(ui_Goro *g, int stack_size);
 void          ui_stack_destroy(ui_Goro *g);
 void          ui_stack_trim(ui_Goro *g);          /* policy-driven (see ui_StackTrimPolicy) */
 void          ui_stack_hard_trim(ui_Goro *g);     /* MADV_DONTNEED, ignores the policy */
+
+#ifdef UI_DEBUG_STACK_TRIM
+/* Test hook: what the trim path asked the kernel for.  ui_debug_trim_calls
+ * counts the madvise() calls, ui_debug_trim_advice is the advice of the
+ * last one (MADV_FREE / MADV_DONTNEED). */
+extern int    ui_debug_trim_calls;
+extern int    ui_debug_trim_advice;
+extern unsigned long ui_debug_trim_start, ui_debug_trim_len;
+extern unsigned long ui_debug_stack_base, ui_debug_stack_committed, ui_debug_stack_low;
+#endif
 void          ui_stack_arenas_destroy(void);
 int           ui_stack_grow(ui_Goro *g, void *fault_addr);
 void         *ui_stack_bottom(ui_Goro *g);

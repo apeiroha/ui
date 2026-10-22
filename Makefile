@@ -222,6 +222,22 @@ $(BUILD_DIR)/test_stack_policy: $(TEST_STACK_POLICY_SRC) $(UI_SRC) $(UI_ASM) $(B
 test-stack-policy: $(BUILD_DIR)/test_stack_policy
 	timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_stack_policy
 
+TEST_STACK_TRIM_SRC = tests/test_stack_trim.c
+
+$(BUILD_DIR)/test_stack_trim: $(TEST_STACK_TRIM_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
+	$(CC) $(UI_CFLAGS) -DUI_DEBUG_STACK_TRIM -I. -o $@ $^ $(LDFLAGS) $(_LIB)
+
+test-stack-trim: $(BUILD_DIR)/test_stack_trim
+	timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_stack_trim
+
+TEST_GORO_VMA_SRC = tests/test_goro_vma.c
+
+$(BUILD_DIR)/test_goro_vma: $(TEST_GORO_VMA_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
+	$(CC) $(UI_CFLAGS) -I. -o $@ $^ $(LDFLAGS) $(_LIB)
+
+test-goro-vma: $(BUILD_DIR)/test_goro_vma
+	timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_goro_vma
+
 TEST_RUN_REENTRANT_SRC = tests/test_run_reentrant.c
 
 $(BUILD_DIR)/test_run_reentrant: $(TEST_RUN_REENTRANT_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
@@ -307,14 +323,14 @@ bench-ui-perf:
 .PHONY: all test test-ui test-c8-race test-p0 test-p0-asan test-udp-echo \
         test-sched-iopark test-spawn-steal test-lifo-slot test-stack-overflow \
         test-polladd-degraded test-audit test-cycle-stress test-spawn-api \
-        test-run-reentrant test-stack-policy \
+        test-run-reentrant test-stack-policy test-stack-trim test-goro-vma \
         bench-ui bench-ui-io bench-stack bench-json bench-stat bench-build \
         web-install web-build web-test libui clean
 
 test: test-ui test-c8-race test-p0 test-udp-echo test-sched-iopark \
        test-spawn-steal test-idle-wait test-stack-overflow test-polladd-degraded \
        test-audit test-cycle-stress test-spawn-api test-run-reentrant \
-       test-stack-policy
+       test-stack-policy test-stack-trim test-goro-vma
 
 all: libui
 
