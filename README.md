@@ -90,7 +90,10 @@ SVG，无外部图表库）。追踪页展示 ns/op 随时间的变化趋势、�
 | `UI_NVCPUS` | vCPU 数量（1–64） | CPU 核数 |
 | `UI_YIELD_IO_MASK` | 连续 I/O 完成每 N 次自愿让出，0 关闭 | 255 |
 | `UI_IDLE_WAIT_MS` | 空闲 vCPU 的兜底唤醒超时（ms）。所有真实唤醒源都是事件驱动的，这个值只兜底“丢唤醒”，并直接决定空载 CPU | 100 |
-| `UI_STACK_RELEASE_ON_RECYCLE` | 回收 goro 时释放栈（不等 `ui_Fini`） | 0 |
+| `UI_STACK_TRIM` | 回收 goro 时栈页的归还方式：0 保留（最快，RSS 按池上限增长）、1 `MADV_FREE`（延迟归还，内核在内存压力下回收）、2 `MADV_DONTNEED`（立即归还，RSS 最低） | 1 |
+
+> `UI_STACK_RELEASE_ON_RECYCLE` 已废弃：它从来只被读取、从未被使用，设置它没有任何效果。
+> 现在用 `UI_STACK_TRIM` 选择实际的 madvise 策略。
 
 ## 快速上手
 

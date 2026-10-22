@@ -26,6 +26,10 @@ uint32_t ui_yield_io_mask = UI_YIELD_IO_MASK_DEFAULT;
  * expiry costs one syscall per parked vCPU. */
 uint32_t ui_idle_wait_ms = UI_IDLE_WAIT_MS_DEFAULT;
 
+/* Stack trim policy for recycled goroutines.  Override via env
+ * UI_STACK_TRIM (0=none, 1=MADV_FREE, 2=MADV_DONTNEED). */
+int ui_stack_trim_policy = UI_STACK_TRIM_DEFAULT;
+
 void
 ui_runq_init(ui_vCPU *v)
 {
@@ -563,7 +567,7 @@ ui_goro_retired(void)
 }
 
 /* Prepare a dead goroutine for pooling.  The stack handle is preserved
- * (only its physical pages are released, see ui_stack_madvise_dontneed);
+ * (only its physical pages are released, see ui_stack_trim);
  * everything else is reset so the goroutine can be handed out again.
  * Must be called while the goroutine is still private to this vCPU. */
 static void
@@ -600,8 +604,33 @@ ui_goro_pool_prepare(ui_Goro *cg)
     cg->state = UI_DEAD;   /* pooled goros must never look READY to stale wakes */
 }
 
+/* Hard-trim the stacks of this vCPU's pooled goroutines.
+ *
+ * With the default MADV_FREE policy the resident set of pooled stacks
+ * only shrinks when the kernel reclaims the freed pages under memory
+ * pressure.  Sweeping the pool every UI_STACK_TRIM_SWEEP_INTERVAL
+ * recycles keeps the resident set close to the live set while costing
+ * (1 / interval) of a MADV_DONTNEED per recycle.
+ *
+ * Only this vCPU's own pool is swept: it is private to the vCPU, so no
+ * lock is needed and no other vCPU can be looking at those stacks. */
+static void
+ui_goro_pool_sweep(ui_vCPU *v)
+{
+    if (!v)
+        return;
+    /* With MADV_DONTNEED the pages are already unmapped when the
+     * goroutine was pooled - sweeping would be a no-op. */
+    if (ui_stack_trim_policy != UI_STACK_TRIM_FREE)
+        return;
+    int n = v->goro_pool_count;
+    if (n > 64) n = 64;
+    for (int i = 0; i < n; i++)
+        ui_stack_hard_trim(v->goro_pool[i]);
+}
+
 /* Return a dead goro to a pool. Stacks preserved; physical pages released
- * via MADV_DONTNEED. Must be called outside runq_lock.
+ * per the trim policy. Must be called outside runq_lock.
  * Tries per-vCPU pool first (no lock), then global pool (mutex). */
 static void
 ui_goro_recycle(ui_Goro *cg)
@@ -611,15 +640,19 @@ ui_goro_recycle(ui_Goro *cg)
     /* 1. Try per-vCPU pool (no lock) */
     if (v && v->goro_pool_count < UI_LOCAL_GORO_POOL_SIZE)
     {
-        /* Always release the stack's physical pages to the kernel on
-         * recycle (not just under the env knob): pooled goroutines keep
-         * their stacks for reuse, but retaining committed pages makes
-         * RSS grow linearly with spawn count and eventually OOMs
-         * long-running servers.  Pages fault back in on next use. */
-        ui_stack_madvise_dontneed(cg);
+        /* Release the stack's physical pages back to the kernel: pooled
+         * goroutines keep their stacks for reuse, but retaining committed
+         * pages makes RSS grow linearly with spawn count and eventually
+         * OOMs long-running servers.  Pages fault back in on next use. */
+        ui_stack_trim(cg);
         ui_goro_pool_prepare(cg);
         v->goro_pool[v->goro_pool_count] = cg;
         v->goro_pool_count++;
+        if (++v->trim_sweep_count >= UI_STACK_TRIM_SWEEP_INTERVAL)
+        {
+            v->trim_sweep_count = 0;
+            ui_goro_pool_sweep(v);
+        }
         atomic_fetch_sub(&g_ui_sched.active_count, 1);
         ui_goro_retired();
         return;
@@ -634,7 +667,7 @@ ui_goro_recycle(ui_Goro *cg)
      * first is safe: the goroutine is still private to this vCPU, so no
      * other thread can reach the stack until it is published to the
      * pool below. */
-    ui_stack_madvise_dontneed(cg);
+    ui_stack_trim(cg);
     int pushed = 0;
     pthread_mutex_lock(&g_ui_sched.goro_pool_lock);
     if (g_ui_sched.goro_pool_count < UI_GORO_POOL_SIZE)
@@ -645,6 +678,11 @@ ui_goro_recycle(ui_Goro *cg)
         pushed = 1;
     }
     pthread_mutex_unlock(&g_ui_sched.goro_pool_lock);
+    if (v && ++v->trim_sweep_count >= UI_STACK_TRIM_SWEEP_INTERVAL)
+    {
+        v->trim_sweep_count = 0;
+        ui_goro_pool_sweep(v);
+    }
 
     if (!pushed)
     {
@@ -994,8 +1032,28 @@ ui_Init(void)
     /* Allow override via environment for testing */
     const char *env_ncpus = getenv("UI_NVCPUS");
     if (env_ncpus) { int n = atoi(env_ncpus); if (n >= 1 && n <= UI_MAX_VCPUS) ncpus = n; }
-    const char *env_release = getenv("UI_STACK_RELEASE_ON_RECYCLE");
-    g_ui_sched.release_stacks_on_recycle = env_release && atoi(env_release) != 0;
+    /* Stack trim policy.  UI_STACK_RELEASE_ON_RECYCLE was accepted but
+     * never read by the recycle path, so it had no effect at all; it is
+     * deprecated in favour of UI_STACK_TRIM, which actually selects the
+     * madvise advice used when a goroutine goes back to the pool. */
+    const char *env_legacy = getenv("UI_STACK_RELEASE_ON_RECYCLE");
+    const char *env_trim = getenv("UI_STACK_TRIM");
+    if (env_legacy)
+    {
+        fprintf(stderr,
+                "ui: UI_STACK_RELEASE_ON_RECYCLE is deprecated and never had "
+                "any effect; use UI_STACK_TRIM=0|1|2 instead"
+                " (0=keep pages, 1=MADV_FREE, 2=MADV_DONTNEED)\n");
+        if (!env_trim)
+            ui_stack_trim_policy = atoi(env_legacy) ? UI_STACK_TRIM_DONTNEED
+                                                    : UI_STACK_TRIM_NONE;
+    }
+    if (env_trim)
+    {
+        int n = atoi(env_trim);
+        if (n >= UI_STACK_TRIM_NONE && n <= UI_STACK_TRIM_DONTNEED)
+            ui_stack_trim_policy = n;
+    }
     const char *env_yield = getenv("UI_YIELD_IO_MASK");
     if (env_yield) { int n = atoi(env_yield); if (n >= 0) ui_yield_io_mask = (uint32_t)n; }
     const char *env_idle = getenv("UI_IDLE_WAIT_MS");
