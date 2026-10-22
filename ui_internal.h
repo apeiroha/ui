@@ -32,6 +32,15 @@
 #define IORING_CQE_F_MORE              (1U << 1)
 #endif
 
+/* TASKRUN_FLAG (Linux 5.19+): the kernel raises IORING_SQ_TASKRUN in the
+ * SQ ring flags when it has deferred task work to run. */
+#ifndef IORING_SETUP_TASKRUN_FLAG
+#define IORING_SETUP_TASKRUN_FLAG      (1U << 9)
+#endif
+#ifndef IORING_SQ_TASKRUN
+#define IORING_SQ_TASKRUN               (1U << 2)
+#endif
+
 #ifndef IORING_REGISTER_PBUF_RING
 #define IORING_REGISTER_PBUF_RING      22
 #define IORING_UNREGISTER_PBUF_RING    23
@@ -238,6 +247,9 @@ typedef struct
     size_t           cq_ring_size;
     size_t           sqes_size;
     int              no_sq_array;  /* IORING_SETUP_NO_SQARRAY was enabled */
+    int              taskrun_flag; /* IORING_SETUP_TASKRUN_FLAG was accepted:
+                                    * the kernel raises IORING_SQ_TASKRUN when
+                                    * it has deferred task work to run */
     int              uring_pending;
     /* Multishot recvmsg + buffer ring */
     int              bgid;                 /* buf group id, -1 = unregistered */
@@ -364,6 +376,7 @@ int           ui_vcpu_ensure_ring(ui_vCPU *v);
 int           ui_vcpu_ensure_buf_ring(ui_vCPU *v);
 void          ui_vcpu_destroy_buf_ring(ui_vCPU *v);
 void          ui_uring_drain(ui_vCPU *v);
+int           ui_uring_taskrun_pending(ui_vCPU *v);
 void          ui_recvmulti_process_closeq(ui_vCPU *v);
 void          ui_uring_idle_wait(ui_vCPU *v, uint64_t wait_us);
 int           ui_uring_enter(int ring_fd, unsigned to_submit,

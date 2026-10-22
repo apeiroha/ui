@@ -759,8 +759,12 @@ ui_schedule(void)
         ui_sleepq_expire(v, ui_now_us());
     if (v->uring_pending > 0 || v->has_multishot)
     {
-        /* DEFER_TASKRUN: completions only arrive on explicit GETEVENTS */
-        ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
+        /* DEFER_TASKRUN: completions only arrive on explicit GETEVENTS.
+         * Skip the syscall when the kernel says there is no deferred
+         * task work to run (TASKRUN_FLAG) - the drain below still picks
+         * up any CQE that is already in the ring. */
+        if (ui_uring_taskrun_pending(v))
+            ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
         ui_uring_drain(v);
     }
 
@@ -1692,7 +1696,8 @@ ui_vcpu_idle(ui_vCPU *v)
 
     /* Drain io_uring completions if any are pending */
     if (v->uring_pending > 0 || v->has_multishot) {
-        ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
+        if (ui_uring_taskrun_pending(v))
+            ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
         ui_uring_drain(v);
         if (!ui_runq_empty(v)) return;
     }
@@ -1744,7 +1749,8 @@ ui_vcpu_idle(ui_vCPU *v)
         }
         if (v->uring_pending > 0 || v->has_multishot)
         {
-            ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
+            if (ui_uring_taskrun_pending(v))
+                ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
             ui_uring_drain(v);
             if (!ui_runq_empty(v)) return;
         }
@@ -1762,7 +1768,8 @@ ui_vcpu_idle(ui_vCPU *v)
         return;
     }
     if (v->uring_pending > 0 || v->has_multishot) {
-        ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
+        if (ui_uring_taskrun_pending(v))
+            ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
         ui_uring_drain(v);
         if (!ui_runq_empty(v))
         {
