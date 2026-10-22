@@ -134,13 +134,37 @@ ui_vcpu_ensure_ring(ui_vCPU *v)
         memset(&p, 0, sizeof(p));
         /* Each vCPU is the sole issuer of its ring. DEFER_TASKRUN defers
          * completion processing to explicit io_uring_enter(GETEVENTS) calls,
-         * eliminating kernel IPIs and improving cache locality. */
+         * eliminating kernel IPIs and improving cache locality.
+         *
+         * TASKRUN_FLAG (Linux 5.19+) additionally tells us *when* the
+         * kernel has deferred task work to run: it raises IORING_SQ_TASKRUN
+         * in the SQ ring flags.  Without it every scheduler pass has to
+         * issue an io_uring_enter(GETEVENTS) just to find out that there
+         * is nothing to reap. */
         p.flags = IORING_SETUP_SINGLE_ISSUER |
                   IORING_SETUP_DEFER_TASKRUN |
                   IORING_SETUP_COOP_TASKRUN |
-                  IORING_SETUP_NO_SQARRAY;
+                  IORING_SETUP_NO_SQARRAY |
+                  IORING_SETUP_TASKRUN_FLAG;
 
         v->ring_fd = ui_uring_setup(UI_URING_ENTRIES, &p);
+        if (v->ring_fd >= 0)
+        {
+            v->taskrun_flag = 1;
+        }
+        else
+        {
+            /* Kernel without TASKRUN_FLAG (or without the other flags):
+             * retry without it before giving up on the rest. */
+            memset(&p, 0, sizeof(p));
+            p.flags = IORING_SETUP_SINGLE_ISSUER |
+                      IORING_SETUP_DEFER_TASKRUN |
+                      IORING_SETUP_COOP_TASKRUN |
+                      IORING_SETUP_NO_SQARRAY;
+            v->ring_fd = ui_uring_setup(UI_URING_ENTRIES, &p);
+            if (v->ring_fd >= 0)
+                v->taskrun_flag = 0;
+        }
         if (v->ring_fd < 0)
         {
             /* Fallback: kernel too old for the flags above */
@@ -388,10 +412,15 @@ ui_uring_idle_wait(ui_vCPU *v, uint64_t wait_us)
 {
     /* Flush deferred completions via GETEVENTS (required by DEFER_TASKRUN).
      * This must happen BEFORE blocking on eventfd so that I/O completions
-     * that arrived during ui_schedule() are reaped. */
+     * that arrived during ui_schedule() are reaped.
+     *
+     * With TASKRUN_FLAG the kernel tells us whether it has deferred task
+     * work at all; when it has none, the enter would be a syscall with
+     * nothing to do, and a parked vCPU pays it on every wake. */
     if (v->ring_fd >= 0)
     {
-        ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
+        if (ui_uring_taskrun_pending(v))
+            ui_uring_enter(v->ring_fd, 0, 0, IORING_ENTER_GETEVENTS);
         ui_uring_drain(v);
     }
 
@@ -610,6 +639,25 @@ skip:
     }
     *v->cq_head = head;
     __sync_synchronize();
+}
+
+/* Does the kernel have deferred task work for this ring?
+ *
+ * With IORING_SETUP_TASKRUN_FLAG the kernel raises IORING_SQ_TASKRUN in
+ * the SQ ring flags whenever it has deferred task work to run (the
+ * completion accounting that DEFER_TASKRUN postpones).  When the flag
+ * is clear there is nothing to run and the io_uring_enter(GETEVENTS)
+ * that would run it is a syscall with no work to do - the scheduler
+ * would otherwise pay ~1us on every pass while an I/O is outstanding.
+ *
+ * Rings set up without TASKRUN_FLAG (old kernel) always report "work
+ * pending", which keeps the previous behaviour. */
+int
+ui_uring_taskrun_pending(ui_vCPU *v)
+{
+    if (!v || !v->taskrun_flag || !v->sq_flags)
+        return 1;
+    return (*v->sq_flags & IORING_SQ_TASKRUN) != 0;
 }
 
 /* Helper: submit I/O op, yield, wait for completion */
