@@ -1163,6 +1163,37 @@ ui_StackMemoryLimit(void)
     return (size_t)ui_stack_memory_limit;
 }
 
+/* Report the goroutine ceiling imposed by the kernel's VMA limit.
+ *
+ * Every goroutine stack costs about two VMAs (the arena is PROT_NONE and
+ * each slot's guard page splits it in two), so the number of goroutines
+ * that can be alive at the same time is roughly vm.max_map_count / 2.
+ * The default (1048576) allows ~520k - plenty for most services, but a
+ * container with a lowered limit would hit it much earlier, so say so
+ * once at startup instead of failing later with ENOMEM. */
+static void
+ui_check_map_count_limit(void)
+{
+    FILE *f = fopen("/proc/sys/vm/max_map_count", "r");
+    if (!f)
+        return;                     /* not Linux, or /proc not mounted */
+    long long limit = 0;
+    if (fscanf(f, "%lld", &limit) != 1)
+        limit = 0;
+    fclose(f);
+    if (limit <= 0)
+        return;
+    long long goroutines = limit / 2;
+    if (goroutines >= 100000)
+        return;                     /* the usual limit is fine */
+    fprintf(stderr,
+            "ui: vm.max_map_count is %lld - at most ~%lld goroutines can be "
+            "alive at the same time (each stack needs ~2 VMAs).\n"
+            "    Raise it with 'sysctl vm.max_map_count=...' if the service "
+            "needs more concurrency.\n",
+            limit, goroutines);
+}
+
 int
 ui_Init(void)
 {
@@ -1226,6 +1257,7 @@ ui_Init(void)
     if (env_yield) { int n = atoi(env_yield); if (n >= 0) ui_yield_io_mask = (uint32_t)n; }
     const char *env_idle = getenv("UI_IDLE_WAIT_MS");
     if (env_idle) { int n = atoi(env_idle); if (n >= 1) ui_idle_wait_ms = (uint32_t)n; }
+    ui_check_map_count_limit();
     g_ui_sched.nvcpus = ncpus;
     atomic_store(&g_ui_sched.next_vcpu, 0);
     /* The vCPU array must start on a cache line: the structs are
