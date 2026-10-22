@@ -1405,6 +1405,15 @@ ui_spawn_fatal(const char *what)
             "The runtime is out of goroutine slots or address space.\n"
             "Use ui_TryGo() if the caller can handle the failure.\n",
             what, strerror(errno));
+    if (errno == ENOMEM)
+        fprintf(stderr,
+                "Hint: every goroutine stack costs ~2 VMAs (the arena is\n"
+                "      PROT_NONE with a guard page per slot), so the\n"
+                "      process runs into the kernel's VMA limit\n"
+                "      (vm.max_map_count, 1048576 by default) at roughly\n"
+                "      half that many live goroutines.  Raise it with\n"
+                "      'sysctl vm.max_map_count=...' or keep fewer\n"
+                "      goroutines alive at the same time.\n");
     _exit(1);
 }
 
