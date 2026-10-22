@@ -1,32 +1,31 @@
+/* UI (うい) I/O benchmarks.
+ *
+ * Modeled on Go's testing.B (see tests/bench.h).  The metric name is
+ * the one the dashboard already tracks - do not rename it without also
+ * updating web/src/metrics.test.ts.
+ */
 #include "ui.h"
+#include "bench.h"
 
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <time.h>
 #include <sys/socket.h>
-#include <fcntl.h>
+#include <unistd.h>
 
-static uint64_t now_us(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000 + (uint64_t)ts.tv_nsec / 1000;
-}
+static int    io_pair[2];
+static int    io_target;
+static int    io_count;
+static char   io_buf[4096];
 
-#define REPORT(op, us, count) do { \
-    double ns = (double)(us) * 1000.0 / (count); \
-    printf("%8.0f ns/op  (%d ops in %lluus)\n", ns, (int)(count), (unsigned long long)(us)); \
-} while(0)
-
-static int io_pair[2];
-static int io_target;
-static int io_count;
-static char io_buf[4096];
-
-static void io_reader(void) {
+/* Read `io_target` chunks of 512 bytes out of the socket. */
+static void
+io_reader(void)
+{
     int count = 0;
-    while (count < io_target) {
+    while (count < io_target)
+    {
         ssize_t n = ui_Read(io_pair[0], io_buf, 512);
         if (n <= 0) break;
         count++;
@@ -34,13 +33,25 @@ static void io_reader(void) {
     io_count = count;
 }
 
-static void bench_io_fastpath(int N) {
-    printf("\n--- I/O fast path (%d ops) ---\n", N);
-
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, io_pair) < 0) {
-        perror("socketpair"); return;
+/* The data is already in the socket buffer, so every read completes
+ * without parking.  The socket buffer bounds how much can be pre-filled,
+ * so the real op count can be smaller than requested - it is reported
+ * so the number is not silently wrong.
+ *
+ * The op count is fixed rather than auto-scaled: the amount of data
+ * that fits in the socket buffer does not grow with the iteration
+ * count, so scaling it would only change the clamp.
+ */
+static void
+bench_io_fastpath(ui_bench_ctx *b, int n)
+{
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, io_pair) < 0)
+    {
+        perror("socketpair");
+        ui_bench_set_ops(b, 0);
+        return;
     }
-    int bufsz = 16*1024*1024;  /* kernel doubles → 32MB effective */
+    int bufsz = 16 * 1024 * 1024;  /* kernel doubles -> 32MB effective */
     setsockopt(io_pair[0], SOL_SOCKET, SO_RCVBUF, &bufsz, sizeof(bufsz));
     setsockopt(io_pair[1], SOL_SOCKET, SO_SNDBUF, &bufsz, sizeof(bufsz));
 
@@ -49,44 +60,49 @@ static void bench_io_fastpath(int N) {
     int flags = fcntl(io_pair[1], F_GETFL);
     fcntl(io_pair[1], F_SETFL, flags | O_NONBLOCK);
     char *prebuf = malloc(512);
+    if (!prebuf)
+    {
+        ui_bench_set_ops(b, 0);
+        return;
+    }
     memset(prebuf, 'A', 512);
-    for (int i = 0; i < N + 4096; i++) {
-        int n = (int)write(io_pair[1], prebuf, 512);
-        if (n <= 0) break;  /* EAGAIN or error */
+    for (int i = 0; i < n + 4096; i++)
+    {
+        int w = (int)write(io_pair[1], prebuf, 512);
+        if (w <= 0) break;  /* EAGAIN or error */
         prefill_count++;
     }
     fcntl(io_pair[1], F_SETFL, flags);  /* restore blocking */
     free(prebuf);
 
-    if (prefill_count < N) {
-        printf("  WARNING: only pre-filled %d chunks (need %d)\n", prefill_count, N);
-        printf("  Using prefill_count=%d as N\n", prefill_count);
-        N = prefill_count;
-    }
-
     ui_Init();
-    io_target = N;
+    io_target = prefill_count;
     io_count = 0;
 
-    uint64_t start = now_us();
+    ui_bench_start(b);
     ui_Go(io_reader);
     ui_Run();
-    uint64_t end = now_us();
+    ui_bench_stop(b);
 
-    printf("  %-45s ", "ui_Read (always-available data)");
-    REPORT("read", end - start, io_count);
+    ui_bench_set_ops(b, io_count);
+    ui_bench_report_extra(b, "prefilled", (double)prefill_count, "chunks");
 
     ui_Fini();
-    close(io_pair[0]); close(io_pair[1]);
+    close(io_pair[0]);
+    close(io_pair[1]);
 }
 
-int main(void) {
+int
+main(int argc, char **argv)
+{
     setvbuf(stdout, NULL, _IONBF, 0);
     printf("UI I/O benchmarks\n");
-    printf("=================\n");
+    printf("=================\n\n");
 
-    bench_io_fastpath(100000);
+    ui_bench_add("bench_ui_io", "ui_Read (always-available data)",
+                 bench_io_fastpath, NULL, 100000);
 
+    int rc = ui_bench_main(argc, argv);
     printf("\nDone.\n");
-    return 0;
+    return rc;
 }

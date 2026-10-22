@@ -231,8 +231,14 @@ test-run-reentrant: $(BUILD_DIR)/test_run_reentrant
 	timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_run_reentrant
 
 # ── Benchmarks ──
-$(BUILD_DIR)/bench_ui: tests/bench_ui.c $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
-	$(CC) $(UI_CFLAGS) -I. -o $@ $^ $(LDFLAGS) $(_LIB)
+# The benchmark driver lives in tests/bench.{c,h}: a Go-style harness
+# that picks the iteration count, warms up, repeats the measurement and
+# keeps every sample so the collector can compute a distribution.
+UI_BENCH_SRC = tests/bench.c
+UI_BENCH_HDR = tests/bench.h
+
+$(BUILD_DIR)/bench_ui: tests/bench_ui.c $(UI_BENCH_SRC) $(UI_BENCH_HDR) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
+	$(CC) $(UI_CFLAGS) -I. -Itests -o $@ tests/bench_ui.c $(UI_BENCH_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o $(LDFLAGS) $(_LIB)
 ifneq ($(STRIP),no)
 	strip $@
 endif
@@ -240,8 +246,8 @@ endif
 bench-ui: $(BUILD_DIR)/bench_ui
 	./$(BUILD_DIR)/bench_ui
 
-$(BUILD_DIR)/bench_ui_io: tests/bench_ui_io.c $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
-	$(CC) $(UI_CFLAGS) -I. -o $@ $^ $(LDFLAGS) $(_LIB)
+$(BUILD_DIR)/bench_ui_io: tests/bench_ui_io.c $(UI_BENCH_SRC) $(UI_BENCH_HDR) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
+	$(CC) $(UI_CFLAGS) -I. -Itests -o $@ tests/bench_ui_io.c $(UI_BENCH_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o $(LDFLAGS) $(_LIB)
 ifneq ($(STRIP),no)
 	strip $@
 endif
@@ -252,11 +258,14 @@ bench-ui-io: $(BUILD_DIR)/bench_ui_io
 # Build the benchmark binaries without running them (CI-friendly).
 bench-build: $(BUILD_DIR)/bench_ui $(BUILD_DIR)/bench_ui_io
 
-# Collect a benchmark record as JSON (min of 3 runs per metric). Set
-# BASE_DIR=<other build dir> to also measure that build on this machine
-# and attach it as the run's baseline (same-machine A/B); build it first.
+# Collect a benchmark record as JSON.  Every metric keeps its samples,
+# so the record carries a median, a spread and a stability figure
+# instead of a single number.  Set BASE_DIR=<other build dir> to also
+# measure that build on this machine and attach it as the run's
+# baseline (same-machine A/B); build it first.
 bench-json: $(BUILD_DIR)/bench_ui $(BUILD_DIR)/bench_ui_io
-	node scripts/bench_collect.mjs --bin-dir $(BUILD_DIR) --iters 3 --out bench-output.json \
+	node scripts/bench_collect.mjs --bin-dir $(BUILD_DIR) --iters 2 --count 6 \
+		--out bench-output.json \
 		$(if $(BASE_DIR),--base-bin-dir $(BASE_DIR),)
 
 # ── Web dashboard (web/) ──
