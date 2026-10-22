@@ -215,10 +215,10 @@ struct ui_Goro
 
 typedef struct
 {
-    pthread_t        thread;
-    int              id;
     /* Sentinel for intrusive circular runq list */
     ui_Goro          runq_sentinel;
+    pthread_t        thread;
+    int              id;
     pthread_spinlock_t runq_lock;
     atomic_int       runq_count;
     /* Per-vCPU goro pool (only accessed by this vCPU = no lock) */
@@ -287,7 +287,14 @@ typedef struct
     /* Recycles since the last hard trim of this vCPU's pool (see
      * UI_STACK_TRIM_SWEEP_INTERVAL). */
     int              trim_sweep_count;
- } ui_vCPU;
+    /* Cache-line aligned: the vCPUs live in one array, so without this
+     * the last fields of one vCPU share a cache line with the first
+     * fields of the next one.  `runnext` in particular is written by
+     * the owner and read by every thief. */
+} __attribute__((aligned(64))) ui_vCPU;
+
+_Static_assert(sizeof(ui_vCPU) % 64 == 0,
+               "ui_vCPU must be a multiple of the cache line size");
 
 typedef struct
 {
