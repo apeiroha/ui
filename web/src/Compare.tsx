@@ -2,8 +2,23 @@ import { createMemo, createSignal, onSettled } from "solid-js";
 import { For, Show } from "@solidjs/web";
 import { loadBench } from "./data";
 import { fmtNum, fmtStamp } from "./format";
-import { diffRow, groupsOf, pairRuns, pickAligned, pickLatest, refsOf, runsOf, unionMetrics } from "./metrics";
-import type { BenchData, Run, Side } from "./types";
+import {
+  diffRow,
+  groupsOf,
+  headline,
+  machineOf,
+  pairRuns,
+  pickAligned,
+  pickLatest,
+  refsOf,
+  runsOf,
+  sameMachine,
+  unionMetrics,
+  unitOf,
+  verdictLabel,
+  verdictOf,
+} from "./metrics";
+import type { BenchData, Run, Side, VerdictMap } from "./types";
 
 type Mode = "latest" | "aligned" | "pair";
 
@@ -40,15 +55,18 @@ function MetricTable(props: {
   shortA?: string;
   nameB: string;
   shortB?: string;
+  /** The A/B verdict, when the run measured a baseline. */
+  verdict?: VerdictMap;
 }) {
   const names = createMemo(() => unionMetrics(props.a, props.b, props.group));
+  const hasVerdict = createMemo(() => Boolean(props.verdict?.[props.group]));
   return (
     <Show when={names().length > 0}>
       <h2>{props.group}</h2>
       <table>
         <thead>
           <tr>
-            <th>metric (ns/op, ↓ better)</th>
+            <th>metric (↓ better)</th>
             <th>
               {props.nameA} <Commit short={props.shortA} />
             </th>
@@ -57,17 +75,26 @@ function MetricTable(props: {
             </th>
             <th>Δ</th>
             <th>Δ%</th>
+            <Show when={hasVerdict()}>
+              <th>verdict</th>
+            </Show>
           </tr>
         </thead>
         <tbody>
           <For each={names()}>
             {(name) => {
-              const a = () => props.a?.metrics?.[props.group]?.[name];
-              const b = () => props.b?.metrics?.[props.group]?.[name];
+              const a = () => headline(props.a, props.group, name);
+              const b = () => headline(props.b, props.group, name);
               const d = () => diffRow(a(), b());
+              const unit = () => unitOf(props.b ?? props.a, props.group, name);
+              const v = () => verdictOf({ verdict: props.verdict } as Run, props.group, name);
+              const label = () => verdictLabel(v());
               return (
                 <tr>
-                  <td class="metric">{name}</td>
+                  <td class="metric">
+                    {name}
+                    <span class="unit"> {unit()}</span>
+                  </td>
                   <NumCell v={a()} />
                   <NumCell v={b()} />
                   <td class={"num " + d().cls}>
@@ -76,12 +103,31 @@ function MetricTable(props: {
                   <td class={"num " + d().cls}>
                     {d().present ? (d().pct! > 0 ? "+" : "") + d().pct!.toFixed(1) + "%" : "—"}
                   </td>
+                  <Show when={hasVerdict()}>
+                    <td class={"verdict " + label().cls}>
+                      {label().text}
+                      <Show when={v()}>
+                        {(ver) => (
+                          <span class="p">
+                            {" "}
+                            p={ver().p < 0.0001 ? "<0.0001" : ver().p.toFixed(4)}, n={ver().n}
+                          </span>
+                        )}
+                      </Show>
+                    </td>
+                  </Show>
                 </tr>
               );
             }}
           </For>
         </tbody>
       </table>
+      <Show when={hasVerdict()}>
+        <p class="hint">
+          the verdict comes from a non-parametric test on the samples (Mann-Whitney U, p &lt; 0.05):
+          a difference the test cannot separate from the noise is reported as "not significant".
+        </p>
+      </Show>
     </Show>
   );
 }
@@ -226,6 +272,7 @@ export function Compare() {
                         group={g}
                         a={v().base}
                         b={v().head}
+                        verdict={v().run.verdict}
                         nameA={"base " + v().base.ref}
                         shortA={v().base.short}
                         nameB={"head " + v().head.ref}
@@ -246,19 +293,28 @@ export function Compare() {
             </p>
             <Show when={refView().rows} fallback={<div id="status">{refView().status}</div>}>
               {(rows) => (
-                <For each={refGroups()}>
-                  {(g) => (
-                    <MetricTable
-                      group={g}
-                      a={rows().a}
-                      b={rows().b}
-                      nameA={refA()}
-                      shortA={rows().a?.short}
-                      nameB={refB()}
-                      shortB={rows().b?.short}
-                    />
-                  )}
-                </For>
+                <>
+                  <Show when={!sameMachine(rows().a, rows().b)}>
+                    <p class="warn">
+                      the two sides were measured on different machines ({machineOf(rows().a)} vs{" "}
+                      {machineOf(rows().b)}) - a shared CI runner is not the same machine twice, so
+                      the deltas below are not a regression.
+                    </p>
+                  </Show>
+                  <For each={refGroups()}>
+                    {(g) => (
+                      <MetricTable
+                        group={g}
+                        a={rows().a}
+                        b={rows().b}
+                        nameA={refA()}
+                        shortA={rows().a?.short}
+                        nameB={refB()}
+                        shortB={rows().b?.short}
+                      />
+                    )}
+                  </For>
+                </>
               )}
             </Show>
           </Show>

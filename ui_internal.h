@@ -87,25 +87,21 @@ struct ui_RecvMulti
 extern uint32_t ui_yield_io_mask;
 
 /* Stack trim policy: what happens to a goroutine's stack pages when the
- * goroutine goes back to the pool.
+ * goroutine goes back to the pool.  The policy itself (and the public
+ * API around it) lives in ui.h; this is only the internal state.
  *
- *   NONE     - keep the pages.  Fastest recycle, RSS grows to the
- *              high-water mark of live goroutines.
- *   FREE     - MADV_FREE: the pages are marked free and reclaimed lazily
- *              (by the kernel under memory pressure).  No TLB shootdown,
- *              so recycling is ~40% cheaper than DONTNEED; RSS behaves
- *              like a high-water mark.
- *   DONTNEED - MADV_DONTNEED: the pages are unmapped immediately.  Lowest
- *              RSS, but every recycle pays a TLB shootdown to all CPUs.
- *
- * Overridable via env UI_STACK_TRIM (0/1/2) at ui_Init() time. */
-typedef enum {
-    UI_STACK_TRIM_NONE     = 0,
-    UI_STACK_TRIM_FREE     = 1,
-    UI_STACK_TRIM_DONTNEED = 2,
-} ui_StackTrimPolicy;
+ * Overridable via env UI_STACK_TRIM (0/1/2) at ui_Init() time, or at
+ * runtime through ui_SetStackTrimPolicy(). */
 #define UI_STACK_TRIM_DEFAULT  UI_STACK_TRIM_FREE
 extern int ui_stack_trim_policy;
+
+/* Cap on the stack memory the goroutine pool may keep (bytes).  0 = no
+ * cap.  A non-zero cap also switches the trim policy to the strict
+ * one (MADV_DONTNEED) and makes the pool unmap stacks once the budget
+ * is exhausted.  Overridable via env UI_STACK_MEMORY_LIMIT. */
+extern unsigned long long ui_stack_memory_limit;
+/* Estimated resident bytes held by the pooled goroutine stacks. */
+extern unsigned long long ui_stack_pool_bytes;
 
 /* How many recycles happen between two hard trims (MADV_DONTNEED) of the
  * per-vCPU pool.  HARD trims are what keep the resident set of pooled
@@ -352,6 +348,16 @@ int           ui_stack_init(ui_Goro *g, int stack_size);
 void          ui_stack_destroy(ui_Goro *g);
 void          ui_stack_trim(ui_Goro *g);          /* policy-driven (see ui_StackTrimPolicy) */
 void          ui_stack_hard_trim(ui_Goro *g);     /* MADV_DONTNEED, ignores the policy */
+
+#ifdef UI_DEBUG_STACK_TRIM
+/* Test hook: what the trim path asked the kernel for.  ui_debug_trim_calls
+ * counts the madvise() calls, ui_debug_trim_advice is the advice of the
+ * last one (MADV_FREE / MADV_DONTNEED). */
+extern int    ui_debug_trim_calls;
+extern int    ui_debug_trim_advice;
+extern unsigned long ui_debug_trim_start, ui_debug_trim_len;
+extern unsigned long ui_debug_stack_base, ui_debug_stack_committed, ui_debug_stack_low;
+#endif
 void          ui_stack_arenas_destroy(void);
 int           ui_stack_grow(ui_Goro *g, void *fault_addr);
 void         *ui_stack_bottom(ui_Goro *g);

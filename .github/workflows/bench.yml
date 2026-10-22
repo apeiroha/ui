@@ -124,14 +124,35 @@ jobs:
       - name: Build head release benchmarks (clang 19)
         run: make bench-build BUILD=release TOOLCHAIN=clang CC=clang-19
 
+      # The A/B is only meaningful if both sides are measured with the
+      # same driver and the same build settings - only the library
+      # sources may differ.  The baseline checkout is an older revision
+      # of the repository, so it carries the older benchmark driver (or
+      # none at all); copy the current one in.  Without this the
+      # baseline would report a single number per metric, and a
+      # comparison against one sample cannot be given a significance.
+      - name: Give the baseline the same benchmark driver
+        if: steps.base.outcome == 'success'
+        continue-on-error: true
+        run: |
+          cp tests/bench*.c tests/bench*.h base-src/tests/
+          cp Makefile base-src/Makefile
+
       - name: Build baseline release benchmarks (clang 19)
         id: basebuild
         if: steps.base.outcome == 'success'
         # An old baseline that no longer builds must not break the head
-        # run; fall back to a single-ref measurement instead.
+        # run; fall back to a single-ref measurement instead.  The
+        # benchmark binaries are built one by one so that a driver that
+        # needs an API the baseline does not have (the stack-policy
+        # benchmarks) only costs that one group.
         continue-on-error: true
         working-directory: base-src
-        run: make bench-build BUILD=release TOOLCHAIN=clang CC=clang-19
+        run: |
+          for t in bench_ui bench_ui_io bench_stack; do
+            make "build/$t" BUILD=release TOOLCHAIN=clang CC=clang-19 \
+              || echo "::warning::the baseline cannot build $t"
+          done
 
       - name: Collect benchmark run
         env:
@@ -143,12 +164,48 @@ jobs:
           BASE_SHA: ${{ steps.ab.outputs.base_sha }}
         run: |
           set -euo pipefail
-          args=(--bin-dir build --iters 3 --attempts 8 --out bench-output.json
+          args=(--bin-dir build --iters 3 --count 6 --attempts 8 --out bench-output.json
                 --ref "$HEAD_REF" --sha "$HEAD_SHA")
           if [[ "${{ steps.basebuild.outcome }}" == "success" && -d base-src/build ]]; then
             args+=(--base-bin-dir base-src/build --base-ref "$BASE_REF" --base-sha "$BASE_SHA")
           fi
-          node scripts/bench_collect.mjs "${args[@]}"
+          # Pin the run to the CPUs this runner actually gives us: the
+          # vCPU threads inherit the affinity, and a migrating thread
+          # turns every measurement into a lottery.
+          allowed=$(awk '/Cpus_allowed_list/ {print $2}' /proc/self/status)
+          taskset -c "$allowed" node scripts/bench_collect.mjs "${args[@]}"
+
+      # The syscall counts: a zero-noise signal next to the timings.  If
+      # a change adds one madvise() to the spawn path, that shows up
+      # here as an exact number while the timing would be lost in the
+      # noise of a shared runner.
+      - name: Count the syscalls
+        run: |
+          node scripts/bench_syscalls.mjs --bin-dir build --probe 2000 \
+            --merge bench-output.json
+
+      # The verdict: is the difference between the two builds bigger
+      # than the noise?  A non-parametric test (Mann-Whitney U) on the
+      # samples, the same method Go's benchstat uses.  The result goes
+      # to the job summary so a reviewer sees it on the pull request.
+      - name: Benchmark verdict
+        run: |
+          set -euo pipefail
+          node scripts/benchstat.mjs bench-output.json | tee benchstat.txt
+          {
+            echo "## Benchmark verdict"
+            echo
+            node scripts/benchstat.mjs bench-output.json --markdown
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the raw samples
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-samples
+          path: |
+            bench-output.json
+            benchstat.txt
+          if-no-files-found: error
 
       # The dashboard is a Solid + TypeScript app under web/, built with
       # node (>=22.12 for @solidjs/web). bench_publish copies web/dist.

@@ -1,18 +1,28 @@
 import { describe, expect, it } from "vitest";
 import {
+  bandFor,
   diffRow,
   groupsOf,
+  harnessChangeIndex,
+  headline,
   lastTwo,
+  latestCv,
+  machineOf,
   metricNames,
+  noiseClass,
   pairRuns,
   pickAligned,
   pickLatest,
   refsOf,
   runsOf,
+  sameMachine,
   seriesFor,
   unionMetrics,
+  unitOf,
+  verdictLabel,
+  verdictOf,
 } from "./metrics";
-import type { Run, Side } from "./types";
+import type { MetricStat, Run, Side } from "./types";
 
 const DROP = "rwlock write (4 goros, multi-vcpu)";
 
@@ -224,5 +234,168 @@ describe("series", () => {
     expect(lastTwo([1, null, 3, 4])).toEqual([4, 3]);
     expect(lastTwo([null, null])).toEqual([null, null]);
     expect(lastTwo([7])).toEqual([7, null]);
+  });
+});
+
+/* ── The sample-keeping harness ── */
+
+function stat(p50: number, p95: number, cv: number): MetricStat {
+  return { unit: "ns/op", n: 1000, samples: [p50, p95], min: p50, p50, p95, max: p95, cv_pct: cv, nsamples: 2 };
+}
+
+const v2Run: Run = {
+  id: "gh-v2",
+  ref: "main",
+  short: "v2run00",
+  commit: "v2run00",
+  commit_url: "",
+  date: "2026-10-20T03:30:00Z",
+  metrics: { bench_ui: { "goroutine spawn+exit": 7000 } },
+  stats: { bench_ui: { "goroutine spawn+exit": stat(7000, 7400, 2.5) } },
+  env: { harness: "v2", cpu_model: "Intel Xeon", kernel: "6.8.0", cpus_allowed: "0-3" },
+};
+
+const v2Run2: Run = {
+  ...v2Run,
+  id: "gh-v2b",
+  short: "v2run01",
+  date: "2026-10-21T03:30:00Z",
+  stats: { bench_ui: { "goroutine spawn+exit": stat(7100, 9000, 12) } },
+};
+
+describe("headline", () => {
+  it("prefers the median when the run kept its samples", () => {
+    expect(headline(v2Run, "bench_ui", "goroutine spawn+exit")).toBe(7000);
+  });
+
+  it("falls back to the recorded value for an older run", () => {
+    expect(headline(runs[0], "bench_ui", "goroutine spawn+exit")).toBe(9046);
+  });
+
+  it("is undefined for a metric that is not there", () => {
+    expect(headline(runs[0], "bench_ui", "nope")).toBeUndefined();
+  });
+
+  it("knows the unit", () => {
+    expect(unitOf(v2Run, "bench_ui", "goroutine spawn+exit")).toBe("ns/op");
+    expect(unitOf(runs[0], "bench_ui", "goroutine spawn+exit")).toBe("ns/op");
+  });
+});
+
+describe("the band", () => {
+  it("carries the median and the 95th percentile of each run", () => {
+    const b = bandFor([v2Run, v2Run2], "bench_ui", "goroutine spawn+exit");
+    expect(b.lo).toEqual([7000, 7100]);
+    expect(b.hi).toEqual([7400, 9000]);
+  });
+
+  it("leaves a run without samples empty", () => {
+    const b = bandFor([runs[0], v2Run], "bench_ui", "goroutine spawn+exit");
+    expect(b.lo[0]).toBeNull();
+    expect(b.lo[1]).toBe(7000);
+  });
+});
+
+describe("stability", () => {
+  it("classifies the coefficient of variation", () => {
+    expect(noiseClass(1)).toBe("stable");
+    expect(noiseClass(7)).toBe("fair");
+    expect(noiseClass(25)).toBe("noisy");
+    expect(noiseClass(undefined)).toBe("fair");
+  });
+
+  it("takes the cv of the newest run that has one", () => {
+    expect(latestCv([v2Run, v2Run2], "bench_ui", "goroutine spawn+exit")).toBe(12);
+    expect(latestCv([runs[0]], "bench_ui", "goroutine spawn+exit")).toBeUndefined();
+  });
+});
+
+describe("the harness change", () => {
+  it("finds the first run that kept its samples", () => {
+    const list = [runs[0], v2Run, v2Run2];
+    expect(harnessChangeIndex(list)).toBe(1);
+  });
+
+  it("is -1 when no run has it", () => {
+    expect(harnessChangeIndex([runs[0]])).toBe(-1);
+  });
+});
+
+describe("the machine", () => {
+  it("fingerprints the cpu, the kernel and the cpu set", () => {
+    expect(machineOf(v2Run)).toBe("Intel Xeon / 6.8.0 / 0-3");
+    expect(machineOf(runs[0])).toBe("");
+  });
+
+  it("two runs from the same machine compare", () => {
+    expect(sameMachine(v2Run, v2Run2)).toBe(true);
+  });
+
+  it("two runs from different machines do not", () => {
+    const other = { ...v2Run2, env: { ...v2Run2.env, cpu_model: "AMD EPYC" } };
+    expect(sameMachine(v2Run, other)).toBe(false);
+  });
+
+  it("a run without a fingerprint is not claimed to be a different machine", () => {
+    expect(sameMachine(runs[0], v2Run)).toBe(true);
+  });
+});
+
+describe("the A/B verdict", () => {
+  const verdictRun: Run = {
+    ...v2Run,
+    verdict: {
+      bench_ui: {
+        "goroutine spawn+exit": {
+          verdict: "improved",
+          significant: true,
+          material: true,
+          p: 0.0001,
+          delta_pct: -19.2,
+          base_p50: 8670,
+          head_p50: 7000,
+          base_cv_pct: 2,
+          head_cv_pct: 2.5,
+          n: 24,
+        },
+      },
+    },
+  };
+
+  it("is read from the run", () => {
+    expect(verdictOf(verdictRun, "bench_ui", "goroutine spawn+exit")?.verdict).toBe("improved");
+    expect(verdictOf(v2Run, "bench_ui", "goroutine spawn+exit")).toBeUndefined();
+  });
+
+  it("labels an improvement and a regression", () => {
+    expect(verdictLabel(verdictOf(verdictRun, "bench_ui", "goroutine spawn+exit")).cls).toBe("good");
+    const bad = { ...verdictRun, verdict: { bench_ui: { "goroutine spawn+exit": { ...verdictRun.verdict!.bench_ui["goroutine spawn+exit"], verdict: "regressed" as const } } } };
+    expect(verdictLabel(verdictOf(bad, "bench_ui", "goroutine spawn+exit")).cls).toBe("bad");
+  });
+
+  it("a significant but tiny difference is below the practical threshold", () => {
+    const small = {
+      ...verdictRun,
+      verdict: {
+        bench_ui: {
+          "goroutine spawn+exit": {
+            ...verdictRun.verdict!.bench_ui["goroutine spawn+exit"],
+            verdict: "negligible" as const,
+            material: false,
+            delta_pct: 1.5,
+          },
+        },
+      },
+    };
+    const l = verdictLabel(verdictOf(small, "bench_ui", "goroutine spawn+exit"));
+    expect(l.text).toBe("below the threshold");
+    expect(l.cls).toBe("flat");
+  });
+
+  it("a difference the test cannot separate from noise is not significant", () => {
+    const ns = { ...verdictRun, verdict: { bench_ui: { "goroutine spawn+exit": { ...verdictRun.verdict!.bench_ui["goroutine spawn+exit"], significant: false, verdict: "unchanged" as const } } } };
+    const l = verdictLabel(verdictOf(ns, "bench_ui", "goroutine spawn+exit"));
+    expect(l.text).toBe("not significant");
+    expect(l.cls).toBe("flat");
   });
 });

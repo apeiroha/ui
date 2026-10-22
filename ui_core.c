@@ -28,8 +28,39 @@ uint32_t ui_yield_io_mask = UI_YIELD_IO_MASK_DEFAULT;
 uint32_t ui_idle_wait_ms = UI_IDLE_WAIT_MS_DEFAULT;
 
 /* Stack trim policy for recycled goroutines.  Override via env
- * UI_STACK_TRIM (0=none, 1=MADV_FREE, 2=MADV_DONTNEED). */
+ * UI_STACK_TRIM (0=none, 1=MADV_FREE, 2=MADV_DONTNEED) or at runtime
+ * through ui_SetStackTrimPolicy(). */
 int ui_stack_trim_policy = UI_STACK_TRIM_DEFAULT;
+
+/* Cap on the stack memory the goroutine pool may keep.  Override via
+ * env UI_STACK_MEMORY_LIMIT or ui_SetStackMemoryLimit(). */
+unsigned long long ui_stack_memory_limit;
+
+/* Estimated resident bytes held by the pooled goroutine stacks. */
+unsigned long long ui_stack_pool_bytes;
+
+/* Values set through the public API take precedence over the
+ * environment.  -1 / 0 mean "not set through the API". */
+static int ui_stack_trim_policy_api = -1;
+static unsigned long long ui_stack_memory_limit_api;
+static int ui_stack_memory_limit_api_set;
+
+/* Resident bytes a goroutine's stack holds: the pages between the stack
+ * top and the deepest address the goroutine was ever seen at, rounded
+ * up to whole pages (a shallow goroutine still holds one page). */
+static unsigned long long
+ui_goro_stack_bytes(ui_Goro *g)
+{
+    if (!g->stack_base || !g->stack_low)
+        return 0;
+    unsigned long long top = (unsigned long long)g->stack_base + g->stack_reserve;
+    unsigned long long low = (unsigned long long)g->stack_low;
+    if (low >= top)
+        return 0;
+    unsigned long long ps = g->page_size > 0 ? (unsigned long long)g->page_size
+                                             : (unsigned long long)UI_PAGE_SIZE;
+    return ((top - low + ps - 1) / ps) * ps;
+}
 
 #ifdef UI_DEBUG_GORO_LIMIT
 /* Test hook: see ui_goro_alloc().  0 = unlimited. */
@@ -642,6 +673,19 @@ ui_goro_pool_sweep(ui_vCPU *v)
         ui_stack_hard_trim(v->goro_pool[i]);
 }
 
+/* Would keeping this goroutine's stack in the pool exceed the memory
+ * budget?  The budget covers the POOL only - the stacks of live
+ * goroutines are not part of it. */
+static int
+ui_goro_pool_over_budget(unsigned long long used)
+{
+    if (!ui_stack_memory_limit)
+        return 0;
+    unsigned long long cur = __atomic_load_n(&ui_stack_pool_bytes,
+                                             __ATOMIC_RELAXED);
+    return cur + used > ui_stack_memory_limit;
+}
+
 /* Return a dead goro to a pool. Stacks preserved; physical pages released
  * per the trim policy. Must be called outside runq_lock.
  * Tries per-vCPU pool first (no lock), then global pool (mutex). */
@@ -649,10 +693,22 @@ static void
 ui_goro_recycle(ui_Goro *cg)
 {
     ui_vCPU *v = ui_get_vcpu();
+    unsigned long long used = ui_goro_stack_bytes(cg);
 
     /* 1. Try per-vCPU pool (no lock) */
     if (v && v->goro_pool_count < UI_LOCAL_GORO_POOL_SIZE)
     {
+        if (ui_goro_pool_over_budget(used))
+        {
+            /* The memory budget is exhausted: do not keep the stack.
+             * Unmapping it is what actually returns the pages, so the
+             * resident set follows the budget instead of the pool size. */
+            ui_stack_destroy(cg);
+            free(cg);
+            atomic_fetch_sub(&g_ui_sched.active_count, 1);
+            ui_goro_retired();
+            return;
+        }
         /* Release the stack's physical pages back to the kernel: pooled
          * goroutines keep their stacks for reuse, but retaining committed
          * pages makes RSS grow linearly with spawn count and eventually
@@ -661,6 +717,7 @@ ui_goro_recycle(ui_Goro *cg)
         ui_goro_pool_prepare(cg);
         v->goro_pool[v->goro_pool_count] = cg;
         v->goro_pool_count++;
+        __atomic_fetch_add(&ui_stack_pool_bytes, used, __ATOMIC_RELAXED);
         if (++v->trim_sweep_count >= UI_STACK_TRIM_SWEEP_INTERVAL)
         {
             v->trim_sweep_count = 0;
@@ -680,6 +737,14 @@ ui_goro_recycle(ui_Goro *cg)
      * first is safe: the goroutine is still private to this vCPU, so no
      * other thread can reach the stack until it is published to the
      * pool below. */
+    if (ui_goro_pool_over_budget(used))
+    {
+        ui_stack_destroy(cg);
+        free(cg);
+        atomic_fetch_sub(&g_ui_sched.active_count, 1);
+        ui_goro_retired();
+        return;
+    }
     ui_stack_trim(cg);
     int pushed = 0;
     pthread_mutex_lock(&g_ui_sched.goro_pool_lock);
@@ -691,6 +756,8 @@ ui_goro_recycle(ui_Goro *cg)
         pushed = 1;
     }
     pthread_mutex_unlock(&g_ui_sched.goro_pool_lock);
+    if (pushed)
+        __atomic_fetch_add(&ui_stack_pool_bytes, used, __ATOMIC_RELAXED);
     if (v && ++v->trim_sweep_count >= UI_STACK_TRIM_SWEEP_INTERVAL)
     {
         v->trim_sweep_count = 0;
@@ -1052,6 +1119,81 @@ ui_teardown_signal_handler(void)
     }
 }
 
+/* ── Stack memory policy (public API) ──
+ *
+ * Both setters may be called before ui_Init() (the environment is
+ * applied by ui_Init(), an explicit call wins) or at any time after it
+ * (the change takes effect on the next recycle). */
+
+int
+ui_SetStackTrimPolicy(ui_StackTrimPolicy policy)
+{
+    if (policy < UI_STACK_TRIM_NONE || policy > UI_STACK_TRIM_DONTNEED)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    ui_stack_trim_policy_api = (int)policy;
+    ui_stack_trim_policy = (int)policy;
+    return 0;
+}
+
+int
+ui_GetStackTrimPolicy(void)
+{
+    return ui_stack_trim_policy;
+}
+
+int
+ui_SetStackMemoryLimit(size_t bytes)
+{
+    ui_stack_memory_limit_api = (unsigned long long)bytes;
+    ui_stack_memory_limit_api_set = 1;
+    ui_stack_memory_limit = (unsigned long long)bytes;
+    /* A budget means "memory first": switch the advice to the strict
+     * one unless the caller asked for a specific policy. */
+    if (bytes && ui_stack_trim_policy_api < 0)
+        ui_stack_trim_policy = UI_STACK_TRIM_DONTNEED;
+    return 0;
+}
+
+size_t
+ui_StackMemoryLimit(void)
+{
+    return (size_t)ui_stack_memory_limit;
+}
+
+/* Report the goroutine ceiling imposed by the kernel's VMA limit.
+ *
+ * Every goroutine stack costs about two VMAs (the arena is PROT_NONE and
+ * each slot's guard page splits it in two), so the number of goroutines
+ * that can be alive at the same time is roughly vm.max_map_count / 2.
+ * The default (1048576) allows ~520k - plenty for most services, but a
+ * container with a lowered limit would hit it much earlier, so say so
+ * once at startup instead of failing later with ENOMEM. */
+static void
+ui_check_map_count_limit(void)
+{
+    FILE *f = fopen("/proc/sys/vm/max_map_count", "r");
+    if (!f)
+        return;                     /* not Linux, or /proc not mounted */
+    long long limit = 0;
+    if (fscanf(f, "%lld", &limit) != 1)
+        limit = 0;
+    fclose(f);
+    if (limit <= 0)
+        return;
+    long long goroutines = limit / 2;
+    if (goroutines >= 100000)
+        return;                     /* the usual limit is fine */
+    fprintf(stderr,
+            "ui: vm.max_map_count is %lld - at most ~%lld goroutines can be "
+            "alive at the same time (each stack needs ~2 VMAs).\n"
+            "    Raise it with 'sysctl vm.max_map_count=...' if the service "
+            "needs more concurrency.\n",
+            limit, goroutines);
+}
+
 int
 ui_Init(void)
 {
@@ -1073,6 +1215,7 @@ ui_Init(void)
      * madvise advice used when a goroutine goes back to the pool. */
     const char *env_legacy = getenv("UI_STACK_RELEASE_ON_RECYCLE");
     const char *env_trim = getenv("UI_STACK_TRIM");
+    int trim = UI_STACK_TRIM_DEFAULT;
     if (env_legacy)
     {
         fprintf(stderr,
@@ -1080,19 +1223,41 @@ ui_Init(void)
                 "any effect; use UI_STACK_TRIM=0|1|2 instead"
                 " (0=keep pages, 1=MADV_FREE, 2=MADV_DONTNEED)\n");
         if (!env_trim)
-            ui_stack_trim_policy = atoi(env_legacy) ? UI_STACK_TRIM_DONTNEED
-                                                    : UI_STACK_TRIM_NONE;
+            trim = atoi(env_legacy) ? UI_STACK_TRIM_DONTNEED : UI_STACK_TRIM_NONE;
     }
     if (env_trim)
     {
         int n = atoi(env_trim);
         if (n >= UI_STACK_TRIM_NONE && n <= UI_STACK_TRIM_DONTNEED)
-            ui_stack_trim_policy = n;
+            trim = n;
     }
+    /* An explicit ui_SetStackTrimPolicy() wins over the environment. */
+    if (ui_stack_trim_policy_api >= 0)
+        trim = ui_stack_trim_policy_api;
+    ui_stack_trim_policy = trim;
+
+    /* Memory budget for the goroutine pool (0 = no budget). */
+    unsigned long long limit = 0;
+    const char *env_limit = getenv("UI_STACK_MEMORY_LIMIT");
+    if (env_limit)
+    {
+        long long v = atoll(env_limit);
+        if (v > 0) limit = (unsigned long long)v;
+    }
+    if (ui_stack_memory_limit_api_set)
+        limit = ui_stack_memory_limit_api;
+    ui_stack_memory_limit = limit;
+    /* A budget means "memory first": the fast advice (MADV_FREE) leaves
+     * the pages resident, which is exactly what the budget is meant to
+     * avoid.  An explicit ui_SetStackTrimPolicy() still wins. */
+    if (limit && ui_stack_trim_policy_api < 0)
+        ui_stack_trim_policy = UI_STACK_TRIM_DONTNEED;
+
     const char *env_yield = getenv("UI_YIELD_IO_MASK");
     if (env_yield) { int n = atoi(env_yield); if (n >= 0) ui_yield_io_mask = (uint32_t)n; }
     const char *env_idle = getenv("UI_IDLE_WAIT_MS");
     if (env_idle) { int n = atoi(env_idle); if (n >= 1) ui_idle_wait_ms = (uint32_t)n; }
+    ui_check_map_count_limit();
     g_ui_sched.nvcpus = ncpus;
     atomic_store(&g_ui_sched.next_vcpu, 0);
     /* The vCPU array must start on a cache line: the structs are
@@ -1203,6 +1368,7 @@ ui_Fini(void)
         free(g_ui_sched.goro_pool[i]);
     }
     g_ui_sched.goro_pool_count = 0;
+    ui_stack_pool_bytes = 0;
     ui_stack_arenas_destroy();
     pthread_mutex_destroy(&g_ui_sched.stack_arena_lock);
     pthread_mutex_destroy(&g_ui_sched.goro_pool_lock);
@@ -1268,11 +1434,19 @@ ui_goro_alloc(ui_Func0 entry, void *arg, int stack_size)
         pthread_mutex_unlock(&g_ui_sched.goro_pool_lock);
     }
 
+    /* The goroutine came out of a pool: its stack is about to be reused,
+     * so it no longer counts against the pool's memory budget. */
+    if (g)
+    {
+        unsigned long long used = ui_goro_stack_bytes(g);
+        if (used)
+            __atomic_fetch_sub(&ui_stack_pool_bytes, used, __ATOMIC_RELAXED);
+    }
+
     /* 3. Allocate new if nothing available */
     if (!g)
     {
-        g = calloc(1, sizeof(ui_Goro));
-        if (!g) { errno = ENOMEM; return NULL; }
+        g = calloc(1, sizeof(ui_Goro));        if (!g) { errno = ENOMEM; return NULL; }
         g->sleepq_idx = -1;
         atomic_store(&g->sleepq_vcpu, -1);
         /* ui_stack_init() fails when the address space or the kernel's
