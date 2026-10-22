@@ -385,11 +385,11 @@ ui_uring_submit(ui_vCPU *v)
     if (!v->no_sq_array)
         v->sq_array[tail & mask] = tail & mask;
 
-    /* Write barrier: ensure SQE data + sq_array are visible before tail update */
-    __sync_synchronize();
-
-    /* Advance tail: kernel is now allowed to see and consume this SQE */
-    *v->sq_tail = tail + 1;
+    /* Publish the new tail with a release store: the SQE (and sq_array)
+     * writes above must be visible to the kernel before it can see the
+     * tail.  A release store is what the ordering needs - a full fence
+     * (mfence) would also order unrelated loads and stores. */
+    __atomic_store_n(v->sq_tail, tail + 1, __ATOMIC_RELEASE);
 
     /* Track pending requests */
     v->uring_pending++;
@@ -637,8 +637,9 @@ ui_uring_drain(ui_vCPU *v)
 skip:
         head++;
     }
-    *v->cq_head = head;
-    __sync_synchronize();
+    /* Release store: the CQEs we consumed must not be recycled by the
+     * kernel before we are done with them. */
+    __atomic_store_n(v->cq_head, head, __ATOMIC_RELEASE);
 }
 
 /* Does the kernel have deferred task work for this ring?
