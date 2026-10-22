@@ -292,10 +292,13 @@ main(int argc, char **argv)
     ui_bench_add("bench_stack", "VMA count (1000 goroutines)", bench_vma_count,
                  NULL, 1000);
 
+    /* 25000 rather than 50000: those two are the expensive ones (a deep
+     * frame costs ~8us per goroutine) and the resident set reaches its
+     * steady state long before. */
     ui_bench_add("bench_stack", "goroutine spawn+exit (deep stack, 64KB)",
-                 bench_warm_deep, (void *)&cfg_free, 50000);
+                 bench_warm_deep, (void *)&cfg_free, 25000);
     ui_bench_add("bench_stack", "stack pool RSS (deep stack, DONTNEED)",
-                 bench_rss_deep, (void *)&cfg_strict, 50000);
+                 bench_rss_deep, (void *)&cfg_strict, 25000);
 
     int rc = ui_bench_main(argc, argv);
     printf("\n=== Done ===\n");
