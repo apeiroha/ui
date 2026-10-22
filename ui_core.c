@@ -591,6 +591,11 @@ ui_goro_pool_prepare(ui_Goro *cg)
     ui_StackArena *sa = cg->stack_arena;
     int    ss = cg->stack_slot;
     int    ps = cg->page_size;
+    /* The low-water mark belongs to the STACK, not to this life of the
+     * goroutine: the next tenant of the same stack cannot use less than
+     * the previous one, so keeping it lets the pool sweep trim just the
+     * used pages as well. */
+    uintptr_t slow = cg->stack_low;
     memset(cg, 0, sizeof(ui_Goro));
     cg->stack_base = sb;
     cg->stack_reserve = sr;
@@ -598,6 +603,7 @@ ui_goro_pool_prepare(ui_Goro *cg)
     cg->stack_arena = sa;
     cg->stack_slot = ss;
     cg->page_size = ps;
+    cg->stack_low = slow;
     cg->sleepq_idx = -1;
     atomic_store(&cg->sleepq_vcpu, -1);
     cg->io_token = tok + 1;   /* 代际 +1：新世可被日志区分 */
@@ -715,6 +721,24 @@ ui_schedule(void)
      * ui_wakeup/standbyq. */
     ui_Goro *cg = v->current;
     v->current = NULL;
+
+    /* Remember the deepest stack address this goroutine has reached.
+     * cg->rsp holds the stack pointer the goroutine switched out with,
+     * so it is a good (slightly conservative) lower bound of the pages
+     * it actually touched.  When the goroutine is recycled we hand
+     * back only that range instead of the whole committed region: a
+     * shallow goroutine touches a couple of pages, while the committed
+     * region is 128KB by default - trimming 16x less memory is 16x
+     * less page-table work and no TLB shootdown for the untouched part. */
+    if (cg && cg->rsp && cg->stack_base)
+    {
+        uintptr_t sp = (uintptr_t)cg->rsp;
+        uintptr_t base = (uintptr_t)cg->stack_base;
+        uintptr_t top = base + cg->stack_reserve;
+        if (sp >= base && sp <= top &&
+            (cg->stack_low == 0 || sp < cg->stack_low))
+            cg->stack_low = sp;
+    }
 
     /* Drain standbyq (process cross-vCPU wakers/steals) */
     ui_drain_standbyq(v);

@@ -195,14 +195,46 @@ ui_stack_arenas_destroy(void)
     }
 }
 
+/* Hand the physical pages of the committed region back to the kernel.
+ *
+ * Only the part that was actually touched is returned: the goroutine
+ * records the lowest stack address it was ever seen at (stack_low), and
+ * the pages below it were never faulted in.  A shallow goroutine uses a
+ * couple of pages, so this trims ~16x less memory than the whole
+ * committed region (128KB by default) - and the madvise cost is
+ * proportional to the range that is walked. */
+static void
+ui_stack_trim_range(ui_Goro *g, int advice)
+{
+    if (!g->stack_base || g->stack_committed == 0)
+        return;
+    char *base = (char *)g->stack_base;
+    char *top  = base + g->stack_reserve;
+    char *start = top - g->stack_committed;      /* committed region start */
+    if (g->stack_low)
+    {
+        char *low = (char *)g->stack_low;
+        if (low > start && low < top)
+        {
+            /* madvise() needs a page-aligned start; round DOWN so the
+             * page that holds the deepest used address is included. */
+            size_t ps = (size_t)(g->page_size > 0 ? g->page_size : UI_PAGE_SIZE);
+            start = (char *)((uintptr_t)low & ~((uintptr_t)ps - 1));
+        }
+    }
+    if (start >= top)
+        return;
+    madvise(start, (size_t)(top - start), advice);
+}
+
 /* Release the physical pages of the committed region; keep the virtual
  * address range.  Called when returning a stack to the pool.
  *
  * Which advice is used depends on ui_stack_trim_policy:
  *   MADV_FREE     - the pages are marked free and reclaimed lazily by the
  *                   kernel.  No TLB shootdown, so recycling a goroutine
- *                   is ~40% cheaper; the resident set becomes a
- *                   high-water mark instead of tracking the live set.
+ *                   is cheaper; the resident set becomes a high-water
+ *                   mark instead of tracking the live set.
  *   MADV_DONTNEED - the pages are unmapped right away.  Lowest resident
  *                   set, but every recycle costs a TLB shootdown on all
  *                   CPUs.
@@ -213,11 +245,8 @@ ui_stack_trim(ui_Goro *g)
     int policy = ui_stack_trim_policy;
     if (policy == UI_STACK_TRIM_NONE)
         return;
-    if (!g->stack_base || g->stack_committed == 0)
-        return;
-    void *commit_start = (char *)g->stack_base + g->stack_reserve - g->stack_committed;
-    madvise(commit_start, g->stack_committed,
-            policy == UI_STACK_TRIM_DONTNEED ? MADV_DONTNEED : MADV_FREE);
+    ui_stack_trim_range(g, policy == UI_STACK_TRIM_DONTNEED ? MADV_DONTNEED
+                                                            : MADV_FREE);
 }
 
 /* Unmap the committed pages immediately, regardless of the policy.
@@ -226,10 +255,7 @@ ui_stack_trim(ui_Goro *g)
 void
 ui_stack_hard_trim(ui_Goro *g)
 {
-    if (!g->stack_base || g->stack_committed == 0)
-        return;
-    void *commit_start = (char *)g->stack_base + g->stack_reserve - g->stack_committed;
-    madvise(commit_start, g->stack_committed, MADV_DONTNEED);
+    ui_stack_trim_range(g, MADV_DONTNEED);
 }
 
 int
