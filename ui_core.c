@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <errno.h>
 #include <unistd.h>
 #include <poll.h>
 #include <sys/eventfd.h>
@@ -29,6 +30,12 @@ uint32_t ui_idle_wait_ms = UI_IDLE_WAIT_MS_DEFAULT;
 /* Stack trim policy for recycled goroutines.  Override via env
  * UI_STACK_TRIM (0=none, 1=MADV_FREE, 2=MADV_DONTNEED). */
 int ui_stack_trim_policy = UI_STACK_TRIM_DEFAULT;
+
+#ifdef UI_DEBUG_GORO_LIMIT
+/* Test hook: see ui_goro_alloc().  0 = unlimited. */
+int ui_debug_goro_limit;
+static int ui_debug_goro_alloc_count;
+#endif
 
 void
 ui_runq_init(ui_vCPU *v)
@@ -1211,6 +1218,18 @@ ui_goro_alloc(ui_Func0 entry, void *arg, int stack_size)
     ui_vCPU *v = ui_get_vcpu();
     ui_Goro *g = NULL;
 
+#ifdef UI_DEBUG_GORO_LIMIT
+    /* Test hook: refuse goroutine allocations past a limit, so the
+     * spawn-failure path can be exercised without exhausting the
+     * address space. */
+    if (ui_debug_goro_limit > 0 &&
+        ++ui_debug_goro_alloc_count > ui_debug_goro_limit)
+    {
+        errno = ENOMEM;
+        return NULL;
+    }
+#endif
+
     /* 1. Try current vCPU's per-vCPU pool (no lock) */
     if (v && v->goro_pool_count > 0)
     {
@@ -1236,10 +1255,12 @@ ui_goro_alloc(ui_Func0 entry, void *arg, int stack_size)
     if (!g)
     {
         g = calloc(1, sizeof(ui_Goro));
-        if (!g) return NULL;
+        if (!g) { errno = ENOMEM; return NULL; }
         g->sleepq_idx = -1;
         atomic_store(&g->sleepq_vcpu, -1);
-        if (ui_stack_init(g, stack_size) < 0) { free(g); return NULL; }
+        /* ui_stack_init() fails when the address space or the kernel's
+         * VMA limit is exhausted; errno already carries the reason. */
+        if (ui_stack_init(g, stack_size) < 0) { free(g); errno = ENOMEM; return NULL; }
     }
 
     g->entry = entry;
@@ -1355,15 +1376,46 @@ ui_spawn_enqueue(ui_Goro *g)
         ui_wake_vcpu(&g_ui_sched.vcpus[target]);
 }
 
+/* Spawn failure is fatal by default: a silently dropped task is a
+ * correctness bug in the caller's workload, and the runtime cannot know
+ * whether the task was optional.  Callers that can shed load use
+ * ui_TryGo() instead. */
+static void
+ui_spawn_fatal(const char *what)
+{
+    fprintf(stderr,
+            "\nFATAL: %s: cannot create goroutine: %s\n"
+            "The runtime is out of goroutine slots or address space.\n"
+            "Use ui_TryGo() if the caller can handle the failure.\n",
+            what, strerror(errno));
+    _exit(1);
+}
+
 uint64_t ui_Go(ui_Func0 f) { return ui_GoSized(f, 0); }
 
 uint64_t
 ui_GoSized(ui_Func0 f, int stack_size)
 {
     ui_Goro *g = ui_goro_alloc(f, NULL, stack_size);
-    if (!g) return 0;
+    if (!g) ui_spawn_fatal("ui_Go");
     ui_spawn_enqueue(g);
     return (uint64_t)(uintptr_t)g;
+}
+
+int
+ui_TryGoSized(ui_Func0 f, int stack_size, uint64_t *id_out)
+{
+    ui_Goro *g = ui_goro_alloc(f, NULL, stack_size);
+    if (!g) return -1;
+    ui_spawn_enqueue(g);
+    if (id_out) *id_out = (uint64_t)(uintptr_t)g;
+    return 0;
+}
+
+int
+ui_TryGo(ui_Func0 f, uint64_t *id_out)
+{
+    return ui_TryGoSized(f, 0, id_out);
 }
 
 uint64_t ui_Go1(void *fn, uintptr_t arg) { return ui_Go1Sized(fn, arg, 0); }
@@ -1382,12 +1434,25 @@ uint64_t
 ui_Go1Sized(void *fn, uintptr_t arg, int stack_size)
 {
     struct go1_pkg *p = malloc(sizeof(*p));
-    if (!p) return 0;
+    if (!p) { errno = ENOMEM; ui_spawn_fatal("ui_Go1"); }
     p->fn = fn; p->arg = arg;
     ui_Goro *g = ui_goro_alloc((ui_Func0)go1_trampoline, p, stack_size);
-    if (!g) { free(p); return 0; }
+    if (!g) { free(p); ui_spawn_fatal("ui_Go1"); }
     ui_spawn_enqueue(g);
     return (uint64_t)(uintptr_t)g;
+}
+
+int
+ui_TryGo1(void *fn, uintptr_t arg, uint64_t *id_out)
+{
+    struct go1_pkg *p = malloc(sizeof(*p));
+    if (!p) { errno = ENOMEM; return -1; }
+    p->fn = fn; p->arg = arg;
+    ui_Goro *g = ui_goro_alloc((ui_Func0)go1_trampoline, p, 0);
+    if (!g) { free(p); errno = ENOMEM; return -1; }
+    ui_spawn_enqueue(g);
+    if (id_out) *id_out = (uint64_t)(uintptr_t)g;
+    return 0;
 }
 
 /* ── Targeted spawn (GoOn) ──
@@ -1402,7 +1467,7 @@ uint64_t
 ui_GoOnSized(ui_Func0 f, int stack_size, int vcpu)
 {
     ui_Goro *g = ui_goro_alloc(f, NULL, stack_size);
-    if (!g) return 0;
+    if (!g) ui_spawn_fatal("ui_GoOn");
     g->pinned = 1;   /* honor first-run placement: not stealable yet */
     ui_spawn_enqueue_at(g, vcpu);
     ui_wake_vcpu(&g_ui_sched.vcpus[g->home_vcpu]);
@@ -1415,10 +1480,10 @@ uint64_t
 ui_Go1OnSized(void *fn, uintptr_t arg, int stack_size, int vcpu)
 {
     struct go1_pkg *p = malloc(sizeof(*p));
-    if (!p) return 0;
+    if (!p) { errno = ENOMEM; ui_spawn_fatal("ui_Go1On"); }
     p->fn = fn; p->arg = arg;
     ui_Goro *g = ui_goro_alloc((ui_Func0)go1_trampoline, p, stack_size);
-    if (!g) { free(p); return 0; }
+    if (!g) { free(p); ui_spawn_fatal("ui_Go1On"); }
     g->pinned = 1;   /* honor first-run placement: not stealable yet */
     ui_spawn_enqueue_at(g, vcpu);
     ui_wake_vcpu(&g_ui_sched.vcpus[g->home_vcpu]);

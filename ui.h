@@ -19,6 +19,17 @@ uint64_t ui_GoSized(ui_Func0 f, int stack_size);
 uint64_t ui_Go1(void *fn, uintptr_t arg);
 uint64_t ui_Go1Sized(void *fn, uintptr_t arg, int stack_size);
 
+/* Spawn variants that report failure instead of aborting the process.
+ * ui_Go() and friends abort when a goroutine cannot be created (out of
+ * goroutine slots or address space) - a silently dropped task is a
+ * correctness bug in the caller's workload.  Use these when the caller
+ * can shed load: return 0 on success (the goroutine id is stored in
+ * *id_out when id_out is non-NULL), -1 on failure with errno set
+ * (ENOMEM for an exhausted runtime). */
+int ui_TryGo(ui_Func0 f, uint64_t *id_out);
+int ui_TryGoSized(ui_Func0 f, int stack_size, uint64_t *id_out);
+int ui_TryGo1(void *fn, uintptr_t arg, uint64_t *id_out);
+
 /* Targeted spawn: place the goro on an explicit home vCPU (soft binding —
  * the goro resumes there after blocking ops; stealing may still migrate
  * it).  Out-of-range vcpu clamps to 0. */

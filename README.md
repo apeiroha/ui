@@ -136,6 +136,12 @@ ssize_t n = ui_Read(fd, buf, sizeof buf);
 int     c = ui_Accept(listen_fd, &addr, &addrlen);
 ```
 
+spawn 失败语义：
+
+`ui_Go()` 及其变体在**无法创建 goro 时直接终止进程**（goro 槽位或地址空间耗尽）——
+静默丢弃一个任务对调用方的工作负载是正确性 bug。如果调用方能降级处理，用
+`ui_TryGo()` / `ui_TryGo1()`：成功返回 0 并回填 goro id，失败返回 -1 且 `errno` 被置为 `ENOMEM`。
+
 ## iroha 绑定
 
 `ui.iroha` 是 iroha 语言的 FFI 绑定（纯 extern 声明，对应本库的 C ABI）。
