@@ -41,8 +41,15 @@ make test-idle-wait   # 事件驱动空载：唤醒延迟 + 关机不空等
 make test-stack-overflow # 8MB 栈溢出干净报错
 make bench-ui         # 协程调度基准
 make bench-ui-io      # I/O 基准
-make bench-json       # 采集为 JSON（scripts/bench_collect.mjs，多次取最小值；BASE_DIR= 可做同机 A/B）
+make bench-stack      # 栈占用与回收策略基准
+make bench-json       # 采集为 JSON（scripts/bench_collect.mjs）
+make bench-stat       # 判定两份记录的差异是不是真的（scripts/benchstat.mjs）
 ```
+
+基准驱动在 `tests/bench.{c,h}`，按 Go 的 `testing.B` 组织：每个基准声明自己
+的 op 数（这是指标定义的一部分，不是调参旋钮），预热轮次被丢弃，测量重复多
+次并保留每一个样本。报告给的是中位数加离散度，不是一个孤零零的 ns/op——
+共享 runner 上单个数字是噪声，样本才是测量。
 
 前端面板（`web/`，Solid 2 + TypeScript）本地用 bun：
 
@@ -61,11 +68,13 @@ CI 里改用 node/npm（`@solidjs/web` 需要 node ≥22.12）。
 ## 基准追踪
 
 `.github/workflows/bench.yml` 在 main 每次推送、每日定时、手动触发，以及针对
-main 的 PR 时构建 release 基准。每项指标运行 3 次取最小值（共享 runner 上
-最小值是噪声最小的估计量）。
+main 的 PR 时构建 release 基准。基准进程绑在 runner 真正分给我们的 CPU 上
+（vCPU 线程继承亲和性），每项指标测 6 次，两轮进程运行共 12 个样本。
 
 每个 job 都做**同机 A/B**：同一个 runner 上分别编译并交替运行两个版本的
-二进制，两边共担机器漂移，因此对比结果不是机器差异造成的。对照关系按事件如下：
+二进制，两边共担机器漂移，因此对比结果不是机器差异造成的。基线用的是**同一
+份基准驱动**（旧版本的仓库里没有它），否则基线每个指标只有一个样本，比较给
+不出显著性。对照关系按事件如下：
 
 | 触发 | 对照 base | 新版本 head |
 |------|-----------|-------------|
@@ -73,15 +82,23 @@ main 的 PR 时构建 release 基准。每项指标运行 3 次取最小值（�
 | 推送到 main | `github.event.before`（上一个 main tip） | 新提交 |
 | 定时 / 手动 | 无（手动可用 `base_ref` 指定） | 目标 ref |
 
+每个 job 结束时跑 `scripts/benchstat.mjs`，用非参数的 Mann-Whitney U 检验
+（和 Go 的 benchstat 同一个方法）判断两边的差异是不是比噪声大：判定结果写进
+job summary，PR 页面上直接能看到哪些指标真的变了、变了多少、p 值多少，哪些
+只是噪声。同时用 `strace -c` 采集每个基准的系统调用次数——延迟在共享 runner
+上是噪声，系统调用次数不是，热路径上多一次 `madvise` 会显示成一个确切的数字。
+
 结果追加到 `gh-pages` 分支的历史数据，并发布可视化面板：
 
 **https://apeiroha.github.io/ui/**
 
 面板是 `web/` 下的 Solid 2 + TypeScript 应用（Vite 构建，图表为自绘内联
-SVG，无外部图表库）。追踪页展示 ns/op 随时间的变化趋势、最新值与环比涨跌；
-对比页提供 latest、time-aligned、same-machine pair 三种模式，后者基于记录里
-内嵌的 baseline。历史数据存于 `gh-pages` 的 `data/bench.json`，页面由
-`bench_publish.sh` 从构建产物 `web/dist/` 发布。
+SVG，无外部图表库）。追踪页展示指标随时间的变化趋势，头条数字用中位数，图上
+画出 p50–p95 的带（带宽就是不稳定），每个指标标出样本的变异系数——CV > 10%
+的指标旁边的百分比是没有意义的。对比页提供 latest、time-aligned、same-machine
+pair 三种模式，最后一种基于记录里内嵌的 baseline 和预先算好的显著性判定。
+历史数据存于 `gh-pages` 的 `data/bench.json`，页面由 `bench_publish.sh` 从构建
+产物 `web/dist/` 发布。
 
 ## 环境变量
 
