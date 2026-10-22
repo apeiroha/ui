@@ -2161,7 +2161,71 @@
           }
         }
       }
+    },
+    {
+      "id": "gh-39710801976",
+      "ref": "perf/phase1-spawn-io",
+      "commit": "312e0710c1704baf406b988e098e6d6f2595bae8",
+      "short": "312e0710",
+      "commit_url": "https://github.com/apeiroha/ui/commit/312e0710c1704baf406b988e098e6d6f2595bae8",
+      "metrics": {
+        "bench_ui": {
+          "goroutine spawn+exit": 7789,
+          "chan send+recv (buffered)": 16,
+          "chan try_send+recv": 20,
+          "mutex lock+unlock (uncontested)": 11,
+          "mutex trylock+unlock (uncontested)": 10,
+          "mutex contention spin (50 goros × 1000)": 92,
+          "mutex contention work (50 goros × 1000)": 622,
+          "mutex contention (50 goros × 100 iter)": 130,
+          "chan ping-pong (unbuffered, 2 goros)": 136,
+          "local fanout spawn+exit": 3824,
+          "rwlock read (single goro)": 11,
+          "rwlock read (4 goros, multi-vcpu)": 22,
+          "rwlock read (4 goros + writer)": 30,
+          "rwlock write (4 goros, multi-vcpu)": 48
+        },
+        "bench_ui_io": {
+          "ui_Read (always-available data)": 1652
+        }
+      },
+      "date": "2026-10-22T02:20:48Z",
+      "run_url": "https://github.com/apeiroha/ui/actions/runs/39710801976",
+      "env": {
+        "nvcpus": 4,
+        "toolchain": "clang",
+        "build": "release",
+        "iters": 3,
+        "paired": true
+      },
+      "base": {
+        "ref": "main",
+        "commit": "86b06959264ed1aa0206304468687145f966fa68",
+        "short": "86b06959",
+        "commit_url": "https://github.com/apeiroha/ui/commit/86b06959264ed1aa0206304468687145f966fa68",
+        "metrics": {
+          "bench_ui": {
+            "goroutine spawn+exit": 7942,
+            "chan send+recv (buffered)": 15,
+            "chan try_send+recv": 16,
+            "mutex lock+unlock (uncontested)": 11,
+            "mutex trylock+unlock (uncontested)": 10,
+            "mutex contention spin (50 goros × 1000)": 69,
+            "mutex contention work (50 goros × 1000)": 660,
+            "mutex contention (50 goros × 100 iter)": 129,
+            "chan ping-pong (unbuffered, 2 goros)": 129,
+            "local fanout spawn+exit": 6090,
+            "rwlock read (single goro)": 11,
+            "rwlock read (4 goros, multi-vcpu)": 19,
+            "rwlock read (4 goros + writer)": 22,
+            "rwlock write (4 goros, multi-vcpu)": 60
+          },
+          "bench_ui_io": {
+            "ui_Read (always-available data)": 1716
+          }
+        }
+      }
     }
   ],
-  "generated_at": "2026-10-21T22:53:18Z"
+  "generated_at": "2026-10-22T02:20:48Z"
 }
