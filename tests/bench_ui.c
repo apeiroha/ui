@@ -59,6 +59,7 @@ bench_spawn(ui_bench_ctx *b, int n)
 
 static int      warm_done;
 static int      warm_waves;
+static ui_bench_ctx *warm_ctx;
 
 static void
 warm_child(void)
@@ -66,9 +67,28 @@ warm_child(void)
     __sync_fetch_and_add(&warm_done, 1);
 }
 
+/* The warmup wave and the measured waves run inside a single
+ * ui_Run(): the timing window is opened from the root goroutine, so
+ * the benchmark does not depend on ui_Run() being re-entrant.  That
+ * keeps the driver usable against a baseline build that predates the
+ * re-entrancy fix, which is what the same-machine A/B measures. */
 static void
 warm_root(void)
 {
+    /* One warmup wave, outside the measurement: the first wave pays a
+     * one-off price (fresh stacks: mmap, mprotect and first-touch
+     * faults, ~25ms for 256 goroutines) that has nothing to do with the
+     * steady-state recycle cost.  Leaving it inside the window would
+     * make the reported per-op cost depend on the batch size. */
+    {
+        int target = __atomic_load_n(&warm_done, __ATOMIC_RELAXED) + WARM_WAVE;
+        for (int i = 0; i < WARM_WAVE; i++)
+            ui_Go(warm_child);
+        while (__atomic_load_n(&warm_done, __ATOMIC_RELAXED) < target)
+            ui_Yield();
+    }
+
+    ui_bench_start(warm_ctx);
     for (int w = 0; w < warm_waves; w++)
     {
         int target = __atomic_load_n(&warm_done, __ATOMIC_RELAXED) + WARM_WAVE;
@@ -77,6 +97,7 @@ warm_root(void)
         while (__atomic_load_n(&warm_done, __ATOMIC_RELAXED) < target)
             ui_Yield();
     }
+    ui_bench_stop(warm_ctx);
 }
 
 static void
@@ -87,24 +108,12 @@ bench_spawn_warm(ui_bench_ctx *b, int n)
         waves = 1;
     ui_Init();
     warm_done = 0;
-
-    /* Reach steady state *before* the measurement window opens.  The
-     * first wave pays a one-off price (fresh stacks: mmap, mprotect and
-     * first-touch faults, ~25ms for 256 goroutines) that has nothing to
-     * do with the steady-state recycle cost.  Leaving it inside the
-     * window would make the reported per-op cost depend on the batch
-     * size - the same workload would report 3.9us/op at 12800
-     * goroutines and 2.1us/op at 200000, purely because of how the
-     * one-off cost was amortised. */
-    warm_waves = 1;
-    ui_Go(warm_root);
-    ui_Run();
-
     warm_waves = waves;
-    ui_bench_start(b);
+    warm_ctx = b;
+
     ui_Go(warm_root);
     ui_Run();
-    ui_bench_stop(b);
+
     ui_bench_set_ops(b, waves * WARM_WAVE);
     ui_Fini();
 }
@@ -194,6 +203,8 @@ bench_mutex_trylock(ui_bench_ctx *b, int n)
 
 static uint64_t cont_mtx_spin;
 static int      cont_val_spin;
+static int      cont_done;
+static int      cont_rounds;
 
 static void
 cont_spin_worker(void)
@@ -203,6 +214,24 @@ cont_spin_worker(void)
         ui_MutexLock(cont_mtx_spin);
         cont_val_spin++;
         ui_MutexUnlock(cont_mtx_spin);
+    }
+    __sync_fetch_and_add(&cont_done, 1);
+}
+
+/* The rounds run inside one ui_Run(): the root goroutine waits for
+ * each round's workers to finish before starting the next.  A single
+ * ui_Run() keeps the driver usable against a baseline build whose
+ * ui_Run() is not re-entrant. */
+static void
+cont_root(void)
+{
+    for (int r = 0; r < cont_rounds; r++)
+    {
+        int target = __atomic_load_n(&cont_done, __ATOMIC_RELAXED) + CONT_GOROS;
+        for (int i = 0; i < CONT_GOROS; i++)
+            ui_Go(cont_spin_worker);
+        while (__atomic_load_n(&cont_done, __ATOMIC_RELAXED) < target)
+            ui_Yield();
     }
 }
 
@@ -217,13 +246,11 @@ bench_mutex_contended_spin(ui_bench_ctx *b, int n)
     ui_Init();
     cont_mtx_spin = ui_MutexNew();
     cont_val_spin = 0;
+    cont_done = 0;
+    cont_rounds = rounds;
     ui_bench_start(b);
-    for (int r = 0; r < rounds; r++)
-    {
-        for (int i = 0; i < CONT_GOROS; i++)
-            ui_Go(cont_spin_worker);
-        ui_Run();
-    }
+    ui_Go(cont_root);
+    ui_Run();
     ui_bench_stop(b);
     ui_bench_set_ops(b, rounds * CONT_GOROS * CONT_ITERS);
     ui_MutexFree(cont_mtx_spin);
@@ -236,6 +263,8 @@ bench_mutex_contended_spin(ui_bench_ctx *b, int n)
 
 static uint64_t cont_mtx_work;
 static int      cont_val_work;
+static int      cont_work_done;
+static int      cont_work_rounds;
 
 static void
 cont_work_worker(void)
@@ -246,6 +275,21 @@ cont_work_worker(void)
         for (int j = 0; j < CONT_WORK_INNER; j++)
             cont_val_work ^= cont_val_work * 1103515245 + 12345;
         ui_MutexUnlock(cont_mtx_work);
+    }
+    __sync_fetch_and_add(&cont_work_done, 1);
+}
+
+static void
+cont_work_root(void)
+{
+    for (int r = 0; r < cont_work_rounds; r++)
+    {
+        int target = __atomic_load_n(&cont_work_done, __ATOMIC_RELAXED)
+                     + CONT_GOROS;
+        for (int i = 0; i < CONT_GOROS; i++)
+            ui_Go(cont_work_worker);
+        while (__atomic_load_n(&cont_work_done, __ATOMIC_RELAXED) < target)
+            ui_Yield();
     }
 }
 
@@ -258,13 +302,11 @@ bench_mutex_contended_work(ui_bench_ctx *b, int n)
     ui_Init();
     cont_mtx_work = ui_MutexNew();
     cont_val_work = 0;
+    cont_work_done = 0;
+    cont_work_rounds = rounds;
     ui_bench_start(b);
-    for (int r = 0; r < rounds; r++)
-    {
-        for (int i = 0; i < CONT_GOROS; i++)
-            ui_Go(cont_work_worker);
-        ui_Run();
-    }
+    ui_Go(cont_work_root);
+    ui_Run();
     ui_bench_stop(b);
     ui_bench_set_ops(b, rounds * CONT_GOROS * CONT_ITERS);
     ui_MutexFree(cont_mtx_work);
@@ -277,6 +319,8 @@ bench_mutex_contended_work(ui_bench_ctx *b, int n)
 
 static uint64_t cont_mtx;
 static int      cont_val;
+static int      cont_legacy_done;
+static int      cont_legacy_rounds;
 
 static void
 cont_worker(void)
@@ -286,6 +330,21 @@ cont_worker(void)
         ui_MutexLock(cont_mtx);
         cont_val++;
         ui_MutexUnlock(cont_mtx);
+    }
+    __sync_fetch_and_add(&cont_legacy_done, 1);
+}
+
+static void
+cont_legacy_root(void)
+{
+    for (int r = 0; r < cont_legacy_rounds; r++)
+    {
+        int target = __atomic_load_n(&cont_legacy_done, __ATOMIC_RELAXED)
+                     + CONT_GOROS;
+        for (int i = 0; i < CONT_GOROS; i++)
+            ui_Go(cont_worker);
+        while (__atomic_load_n(&cont_legacy_done, __ATOMIC_RELAXED) < target)
+            ui_Yield();
     }
 }
 
@@ -298,13 +357,11 @@ bench_mutex_contended(ui_bench_ctx *b, int n)
     ui_Init();
     cont_mtx = ui_MutexNew();
     cont_val = 0;
+    cont_legacy_done = 0;
+    cont_legacy_rounds = rounds;
     ui_bench_start(b);
-    for (int r = 0; r < rounds; r++)
-    {
-        for (int i = 0; i < CONT_GOROS; i++)
-            ui_Go(cont_worker);
-        ui_Run();
-    }
+    ui_Go(cont_legacy_root);
+    ui_Run();
     ui_bench_stop(b);
     ui_bench_set_ops(b, rounds * CONT_GOROS * CONT_LEGACY_ITERS);
     ui_MutexFree(cont_mtx);
@@ -317,6 +374,7 @@ bench_mutex_contended(ui_bench_ctx *b, int n)
 
 static uint64_t pp_send_ch, pp_recv_ch;
 static int      pp_rounds;
+static int      pp_done;
 
 static void
 pp_send_worker(void)
@@ -328,6 +386,7 @@ pp_send_worker(void)
         ui_ChanSend(pp_send_ch, &v);
         ui_ChanRecv(pp_recv_ch, &v);
     }
+    __sync_fetch_and_add(&pp_done, 1);
 }
 
 static void
@@ -340,6 +399,24 @@ pp_recv_worker(void)
         v++;
         ui_ChanSend(pp_recv_ch, &v);
     }
+    __sync_fetch_and_add(&pp_done, 1);
+}
+
+static void
+pp_root(void)
+{
+    for (int r = 0; r < pp_rounds; r++)
+    {
+        int target = __atomic_load_n(&pp_done, __ATOMIC_RELAXED) + 2;
+        pp_send_ch = ui_NewChan(sizeof(int), 0);
+        pp_recv_ch = ui_NewChan(sizeof(int), 0);
+        ui_Go(pp_send_worker);
+        ui_Go(pp_recv_worker);
+        while (__atomic_load_n(&pp_done, __ATOMIC_RELAXED) < target)
+            ui_Yield();
+        ui_ChanFree(pp_send_ch);
+        ui_ChanFree(pp_recv_ch);
+    }
 }
 
 static void
@@ -349,22 +426,14 @@ bench_chan_pingpong(ui_bench_ctx *b, int n)
     if (rounds < 1)
         rounds = 1;
     pp_rounds = rounds;
+    pp_done = 0;
     ui_Init();
     ui_bench_start(b);
-    for (int r = 0; r < rounds; r++)
-    {
-        pp_send_ch = ui_NewChan(sizeof(int), 0);
-        pp_recv_ch = ui_NewChan(sizeof(int), 0);
-        ui_Go(pp_send_worker);
-        ui_Go(pp_recv_worker);
-        ui_Run();
-        ui_ChanFree(pp_send_ch);
-        ui_ChanFree(pp_recv_ch);
-    }
+    ui_Go(pp_root);
+    ui_Run();
     ui_bench_stop(b);
     ui_bench_set_ops(b, rounds * PP_ROUND_TRIPS);
     ui_Fini();
-    (void)pp_rounds;
 }
 
 /* ── Local fanout spawn (exercises work stealing) ── */

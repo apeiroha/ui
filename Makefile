@@ -268,6 +268,15 @@ bench-json: $(BUILD_DIR)/bench_ui $(BUILD_DIR)/bench_ui_io
 		--out bench-output.json \
 		$(if $(BASE_DIR),--base-bin-dir $(BASE_DIR),)
 
+# Say whether the difference between two benchmark records is real.
+#   make bench-stat [BENCH_HEAD=bench-output.json] [BENCH_BASE=bench-base.json]
+# With no BENCH_BASE the record's own embedded baseline is used (the A/B
+# mode of bench_collect.mjs).  Add MARKDOWN=1 for the job-summary table.
+BENCH_HEAD ?= bench-output.json
+bench-stat:
+	node scripts/benchstat.mjs $(if $(BENCH_BASE),$(BENCH_BASE) ,)$(BENCH_HEAD) \
+		$(if $(MARKDOWN),--markdown,)
+
 # ── Web dashboard (web/) ──
 # Solid 2 + TypeScript app; locally driven by bun, CI uses node/npm.
 web-install:
@@ -290,7 +299,7 @@ bench-ui-perf:
         test-sched-iopark test-spawn-steal test-lifo-slot test-stack-overflow \
         test-polladd-degraded test-audit test-cycle-stress test-spawn-api \
         test-run-reentrant test-stack-policy \
-        bench-ui bench-ui-io bench-json bench-build \
+        bench-ui bench-ui-io bench-json bench-stat bench-build \
         web-install web-build web-test libui clean
 
 test: test-ui test-c8-race test-p0 test-udp-echo test-sched-iopark \

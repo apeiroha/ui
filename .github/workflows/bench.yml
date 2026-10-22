@@ -124,6 +124,20 @@ jobs:
       - name: Build head release benchmarks (clang 19)
         run: make bench-build BUILD=release TOOLCHAIN=clang CC=clang-19
 
+      # The A/B is only meaningful if both sides are measured with the
+      # same driver and the same build settings - only the library
+      # sources may differ.  The baseline checkout is an older revision
+      # of the repository, so it carries the older benchmark driver (or
+      # none at all); copy the current one in.  Without this the
+      # baseline would report a single number per metric, and a
+      # comparison against one sample cannot be given a significance.
+      - name: Give the baseline the same benchmark driver
+        if: steps.base.outcome == 'success'
+        continue-on-error: true
+        run: |
+          cp tests/bench.c tests/bench.h tests/bench_ui.c tests/bench_ui_io.c base-src/tests/
+          cp Makefile base-src/Makefile
+
       - name: Build baseline release benchmarks (clang 19)
         id: basebuild
         if: steps.base.outcome == 'success'
@@ -143,12 +157,39 @@ jobs:
           BASE_SHA: ${{ steps.ab.outputs.base_sha }}
         run: |
           set -euo pipefail
-          args=(--bin-dir build --iters 3 --attempts 8 --out bench-output.json
+          args=(--bin-dir build --iters 3 --count 6 --attempts 8 --out bench-output.json
                 --ref "$HEAD_REF" --sha "$HEAD_SHA")
           if [[ "${{ steps.basebuild.outcome }}" == "success" && -d base-src/build ]]; then
             args+=(--base-bin-dir base-src/build --base-ref "$BASE_REF" --base-sha "$BASE_SHA")
           fi
-          node scripts/bench_collect.mjs "${args[@]}"
+          # Pin the run to the CPUs this runner actually gives us: the
+          # vCPU threads inherit the affinity, and a migrating thread
+          # turns every measurement into a lottery.
+          allowed=$(awk '/Cpus_allowed_list/ {print $2}' /proc/self/status)
+          taskset -c "$allowed" node scripts/bench_collect.mjs "${args[@]}"
+
+      # The verdict: is the difference between the two builds bigger
+      # than the noise?  A non-parametric test (Mann-Whitney U) on the
+      # samples, the same method Go's benchstat uses.  The result goes
+      # to the job summary so a reviewer sees it on the pull request.
+      - name: Benchmark verdict
+        run: |
+          set -euo pipefail
+          node scripts/benchstat.mjs bench-output.json | tee benchstat.txt
+          {
+            echo "## Benchmark verdict"
+            echo
+            node scripts/benchstat.mjs bench-output.json --markdown
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the raw samples
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-samples
+          path: |
+            bench-output.json
+            benchstat.txt
+          if-no-files-found: error
 
       # The dashboard is a Solid + TypeScript app under web/, built with
       # node (>=22.12 for @solidjs/web). bench_publish copies web/dist.
