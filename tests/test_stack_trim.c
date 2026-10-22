@@ -146,7 +146,11 @@ static void
 touch_stack(int depth)
 {
     volatile char buf[4096];
-    memset((void *)buf, depth & 0x7f, sizeof(buf));
+    /* Volatile writes, not memset: at -O3 the compiler can see that only
+     * buf[0] is ever read and shrink the touch to a single byte, which
+     * would make the whole test measure one page of stack. */
+    for (int i = 0; i < 4096; i += 64)
+        buf[i] = (char)(depth + i);
     if (depth == 0)
     {
         ui_Yield();                /* the deepest point of the stack */
@@ -154,7 +158,7 @@ touch_stack(int depth)
         return;
     }
     touch_stack(depth - 1);
-    sink = buf[0];                 /* used after the call: no tail call */
+    sink = buf[depth & 4095];      /* used after the call: no tail call */
 }
 
 static void
