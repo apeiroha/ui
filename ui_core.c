@@ -1091,7 +1091,20 @@ ui_Init(void)
     if (env_idle) { int n = atoi(env_idle); if (n >= 1) ui_idle_wait_ms = (uint32_t)n; }
     g_ui_sched.nvcpus = ncpus;
     atomic_store(&g_ui_sched.next_vcpu, 0);
-    g_ui_sched.vcpus = calloc((size_t)ncpus, sizeof(ui_vCPU));
+    /* The vCPU array must start on a cache line: the structs are
+     * cache-line aligned (see ui_vCPU) and malloc only guarantees 16
+     * byte alignment. */
+    {
+        void *mem = NULL;
+        size_t bytes = (size_t)ncpus * sizeof(ui_vCPU);
+        if (posix_memalign(&mem, 64, bytes) != 0 || !mem)
+        {
+            ui_teardown_signal_handler();
+            return -1;
+        }
+        memset(mem, 0, bytes);
+        g_ui_sched.vcpus = (ui_vCPU *)mem;
+    }
     if (!g_ui_sched.vcpus) { ui_teardown_signal_handler(); return -1; }
     for (int i = 0; i < ncpus; i++)
     {
