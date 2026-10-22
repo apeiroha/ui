@@ -135,17 +135,24 @@ jobs:
         if: steps.base.outcome == 'success'
         continue-on-error: true
         run: |
-          cp tests/bench.c tests/bench.h tests/bench_ui.c tests/bench_ui_io.c base-src/tests/
+          cp tests/bench*.c tests/bench*.h base-src/tests/
           cp Makefile base-src/Makefile
 
       - name: Build baseline release benchmarks (clang 19)
         id: basebuild
         if: steps.base.outcome == 'success'
         # An old baseline that no longer builds must not break the head
-        # run; fall back to a single-ref measurement instead.
+        # run; fall back to a single-ref measurement instead.  The
+        # benchmark binaries are built one by one so that a driver that
+        # needs an API the baseline does not have (the stack-policy
+        # benchmarks) only costs that one group.
         continue-on-error: true
         working-directory: base-src
-        run: make bench-build BUILD=release TOOLCHAIN=clang CC=clang-19
+        run: |
+          for t in bench_ui bench_ui_io bench_stack; do
+            make "build/$t" BUILD=release TOOLCHAIN=clang CC=clang-19 \
+              || echo "::warning::the baseline cannot build $t"
+          done
 
       - name: Collect benchmark run
         env:

@@ -47,6 +47,7 @@
 
 /* Per-sample state handed to a benchmark body. */
 typedef struct {
+    void       *arg;       /* the argument the benchmark was registered with */
     uint64_t    t0;        /* set by ui_bench_start() */
     uint64_t    t1;        /* set by ui_bench_stop()  */
     uint64_t    bytes;     /* throughput denominator, optional */

@@ -17,7 +17,7 @@
 // keep working unchanged.
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { cpus, tmpdir, release } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
@@ -26,6 +26,7 @@ import { summarize } from "./bench_stats.mjs";
 const GROUPS = [
   ["bench_ui", "bench_ui"],
   ["bench_ui_io", "bench_ui_io"],
+  ["bench_stack", "bench_stack"],
 ];
 // The pre-harness protocol: "  name   1234 ns/op  (N ops in Nus)".  Only
 // used as a fallback for a baseline build that predates the JSON output.
@@ -99,6 +100,10 @@ function machineInfo() {
 // warning; it distinguishes head from base in A/B mode.
 function attemptRun(binDir, binary, count, side, tries) {
   const path = resolve(binDir, binary);
+  if (!existsSync(path)) {
+    console.warn(`[warn] ${side}: ${path} does not exist; skipping`);
+    return null;
+  }
   const dir = mkdtempSync(join(tmpdir(), "uibench-"));
   const jsonPath = join(dir, "out.json");
   let stdout;
@@ -246,6 +251,15 @@ function collectSingle(binDir, binary, iters, count, attempts) {
 function collectPair(headDir, baseDir, binary, iters, count, attempts) {
   const head = new Map();
   const base = new Map();
+  // A baseline that predates a driver (the stack-policy benchmarks need
+  // an API the baseline does not have) still gets measured on the head
+  // side; those metrics simply have no counterpart to compare with.
+  if (!existsSync(resolve(baseDir, binary))) {
+    console.warn(
+      `[warn] ${binary}: no baseline build; measuring the head side only`,
+    );
+    return { head: collectSingle(headDir, binary, iters, count, attempts), base: new Map() };
+  }
   let ok = 0;
   for (let tries = 1; tries <= attempts && ok < iters; tries++) {
     const headFirst = ok % 2 === 0;
@@ -258,7 +272,13 @@ function collectPair(headDir, baseDir, binary, iters, count, attempts) {
     accumulate(s1 === "head" ? head : base, r1);
     accumulate(s2 === "head" ? head : base, r2);
   }
-  if (ok === 0) throw new Error(`${binary}: no successful paired run in ${attempts} attempt(s)`);
+  if (ok === 0) {
+    // A group that exists on one side only (a driver that needs an API
+    // the other side does not have) is not an error: the comparison
+    // simply has no counterpart for those metrics.
+    console.warn(`[warn] ${binary}: no usable run on both sides; skipping the group`);
+    return { head, base, empty: true };
+  }
   if (ok < iters) console.warn(`[warn] ${binary}: only ${ok}/${iters} paired run(s)`);
   return { head, base };
 }
@@ -297,7 +317,7 @@ function main() {
   const baseAcc = new Map();
   if (ab) {
     for (const [group, binary] of GROUPS) {
-      const { head, base } = collectPair(
+      const { head, base, empty } = collectPair(
         opts.binDir,
         opts.baseBinDir,
         binary,
@@ -305,6 +325,7 @@ function main() {
         opts.count,
         opts.attempts,
       );
+      if (empty) continue;
       mergeSlots(headAcc, head);
       mergeSlots(baseAcc, base);
     }

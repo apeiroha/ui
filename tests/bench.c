@@ -144,6 +144,7 @@ run_sample(ui_bench_entry *e, int n, ui_bench_sample_out *out)
 {
     ui_bench_ctx ctx;
     memset(&ctx, 0, sizeof(ctx));
+    ctx.arg = e->arg;
     ctx.ops = n;
 
     uint64_t outer0 = now_ns();

@@ -586,6 +586,41 @@ bench_rwlock_write_multi(ui_bench_ctx *b, int n)
     ui_Fini();
 }
 
+/* ── Select: the fast path over a growing number of channels ──
+ *
+ * The timeout is 0, so ui_SelectWait tries every channel and returns
+ * without parking.  The interesting number is how the cost scales
+ * with the number of channels: it is the per-channel cost of the
+ * registration list.
+ */
+
+#define SELECT_MAX 64
+
+static void
+bench_select(ui_bench_ctx *b, int n)
+{
+    int nch = *(const int *)b->arg;
+    if (nch < 1) nch = 1;
+    if (nch > SELECT_MAX) nch = SELECT_MAX;
+    ui_Init();
+    uint64_t chs[SELECT_MAX];
+    int val = 0;
+    void *bufs[SELECT_MAX];
+    for (int i = 0; i < nch; i++)
+    {
+        chs[i] = ui_NewChan(sizeof(int), 1);
+        bufs[i] = &val;
+    }
+    ui_bench_start(b);
+    for (int i = 0; i < n; i++)
+        ui_SelectWait(chs, bufs, NULL, NULL, nch, 0, 0);
+    ui_bench_stop(b);
+    ui_bench_set_ops(b, n);
+    for (int i = 0; i < nch; i++)
+        ui_ChanFree(chs[i]);
+    ui_Fini();
+}
+
 /* ── Main ── */
 
 int
@@ -626,6 +661,18 @@ main(int argc, char **argv)
                  bench_rwlock_rw_mixed, NULL, 2000000);
     ui_bench_add("bench_ui", "rwlock write (4 goros, multi-vcpu)",
                  bench_rwlock_write_multi, NULL, 800000);
+
+    {
+        static const int c1 = 1, c4 = 4, c16 = 16, c64 = 64;
+        ui_bench_add("bench_ui", "select wait (1 channel)", bench_select,
+                     (void *)&c1, 200000);
+        ui_bench_add("bench_ui", "select wait (4 channels)", bench_select,
+                     (void *)&c4, 200000);
+        ui_bench_add("bench_ui", "select wait (16 channels)", bench_select,
+                     (void *)&c16, 100000);
+        ui_bench_add("bench_ui", "select wait (64 channels)", bench_select,
+                     (void *)&c64, 20000);
+    }
 
     int rc = ui_bench_main(argc, argv);
     printf("\n=== Done ===\n");
