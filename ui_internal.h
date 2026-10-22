@@ -156,6 +156,10 @@ struct ui_Goro
     ui_StackArena *stack_arena;
     int       stack_slot;
     int       page_size;
+    /* Lowest stack address this goroutine has been seen at (absolute).
+     * 0 = unknown.  Used to hand back only the pages that were actually
+     * touched instead of the whole committed region. */
+    uintptr_t stack_low;
 
     ui_Func0  entry;
     void     *arg;
