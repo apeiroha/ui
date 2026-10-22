@@ -142,6 +142,10 @@ spawn 失败语义：
 静默丢弃一个任务对调用方的工作负载是正确性 bug。如果调用方能降级处理，用
 `ui_TryGo()` / `ui_TryGo1()`：成功返回 0 并回填 goro id，失败返回 -1 且 `errno` 被置为 `ENOMEM`。
 
+并发上限：每个 goro 栈约占 2 个 VMA（arena 为 `PROT_NONE`，每槽一个 guard 页把它切成两段），
+所以并发 goro 数受内核 `vm.max_map_count` 限制（默认 1048576，即约 52 万个并发 goro）。
+需要更多时调高该值：`sysctl vm.max_map_count=4194304`。
+
 ## iroha 绑定
 
 `ui.iroha` 是 iroha 语言的 FFI 绑定（纯 extern 声明，对应本库的 C ABI）。
