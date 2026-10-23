@@ -45,9 +45,13 @@ static int ui_stack_trim_policy_api = -1;
 static unsigned long long ui_stack_memory_limit_api;
 static int ui_stack_memory_limit_api_set;
 
-/* Resident bytes a goroutine's stack holds: the pages between the stack
- * top and the deepest address the goroutine was ever seen at, rounded
- * up to whole pages (a shallow goroutine still holds one page). */
+/* Estimated resident bytes of a goroutine's stack: the pages between
+ * the stack top and the deepest address the goroutine was ever seen at.
+ *
+ * An underestimate - see stack_low.  That is acceptable because the
+ * budget is a soft cap whose job is to switch the pool to "memory
+ * first" (MADV_DONTNEED plus dropping stacks), not to hit a byte
+ * target exactly. */
 static unsigned long long
 ui_goro_stack_bytes(ui_Goro *g)
 {
@@ -650,27 +654,42 @@ ui_goro_pool_prepare(ui_Goro *cg)
 
 /* Hard-trim the stacks of this vCPU's pooled goroutines.
  *
- * With the default MADV_FREE policy the resident set of pooled stacks
- * only shrinks when the kernel reclaims the freed pages under memory
- * pressure.  Sweeping the pool every UI_STACK_TRIM_SWEEP_INTERVAL
- * recycles keeps the resident set close to the live set while costing
- * (1 / interval) of a MADV_DONTNEED per recycle.
+ * With MADV_FREE the resident set of pooled stacks only shrinks when
+ * the kernel reclaims the freed pages under memory pressure.  Sweeping
+ * the pool every UI_STACK_TRIM_SWEEP_INTERVAL recycles keeps the
+ * resident set close to the live set while costing (1 / interval) of a
+ * MADV_DONTNEED per recycle.
+ *
+ * The window ROTATES: the pool is a LIFO stack (allocate pops the top,
+ * recycle pushes it), so a fixed window would keep trimming the same
+ * cold tail over and over - already clean after the first pass - and
+ * never touch the stacks that were just recycled and still hold their
+ * pages.
  *
  * Only this vCPU's own pool is swept: it is private to the vCPU, so no
  * lock is needed and no other vCPU can be looking at those stacks. */
+#define UI_STACK_SWEEP_BATCH 64
+
 static void
 ui_goro_pool_sweep(ui_vCPU *v)
 {
     if (!v)
         return;
-    /* With MADV_DONTNEED the pages are already unmapped when the
-     * goroutine was pooled - sweeping would be a no-op. */
+    /* With NONE the pages are meant to stay, with DONTNEED they are
+     * already gone: sweeping makes no sense for either. */
     if (ui_stack_trim_policy != UI_STACK_TRIM_FREE)
         return;
     int n = v->goro_pool_count;
-    if (n > 64) n = 64;
-    for (int i = 0; i < n; i++)
-        ui_stack_hard_trim(v->goro_pool[i]);
+    if (n <= 0)
+        return;
+    int batch = n > UI_STACK_SWEEP_BATCH ? UI_STACK_SWEEP_BATCH : n;
+    if (v->trim_sweep_at >= n)
+        v->trim_sweep_at = 0;
+    if (v->trim_sweep_at + batch > n)
+        batch = n - v->trim_sweep_at;
+    for (int i = 0; i < batch; i++)
+        ui_stack_hard_trim(v->goro_pool[v->trim_sweep_at + i]);
+    v->trim_sweep_at += batch;
 }
 
 /* Would keeping this goroutine's stack in the pool exceed the memory
@@ -796,14 +815,12 @@ ui_schedule(void)
     ui_Goro *cg = v->current;
     v->current = NULL;
 
-    /* Remember the deepest stack address this goroutine has reached.
-     * cg->rsp holds the stack pointer the goroutine switched out with,
-     * so it is a good (slightly conservative) lower bound of the pages
-     * it actually touched.  When the goroutine is recycled we hand
-     * back only that range instead of the whole committed region: a
-     * shallow goroutine touches a couple of pages, while the committed
-     * region is 128KB by default - trimming 16x less memory is 16x
-     * less page-table work and no TLB shootdown for the untouched part. */
+    /* Remember the deepest stack address this goroutine was seen at.
+     * cg->rsp holds the stack pointer it switched out with, so this is
+     * a LOWER BOUND on the pages it touched, not the peak: a goroutine
+     * that recursed and returned comes back near the top before it
+     * switches out.  It feeds the stack memory budget's estimate and
+     * nothing else - the trim always covers the committed region. */
     if (cg && cg->rsp && cg->stack_base)
     {
         uintptr_t sp = (uintptr_t)cg->rsp;
@@ -1211,8 +1228,10 @@ ui_Init(void)
     if (env_ncpus) { int n = atoi(env_ncpus); if (n >= 1 && n <= UI_MAX_VCPUS) ncpus = n; }
     /* Stack trim policy.  UI_STACK_RELEASE_ON_RECYCLE was accepted but
      * never read by the recycle path, so it had no effect at all; it is
-     * deprecated in favour of UI_STACK_TRIM, which actually selects the
-     * madvise advice used when a goroutine goes back to the pool. */
+     * deprecated in favour of UI_STACK_TRIM, which selects what happens
+     * to a recycled goroutine's pages (0 = keep, 1 = MADV_FREE,
+     * 2 = MADV_DONTNEED).  The default is 0 (keep): see
+     * UI_STACK_TRIM_DEFAULT for the measurements behind that. */
     const char *env_legacy = getenv("UI_STACK_RELEASE_ON_RECYCLE");
     const char *env_trim = getenv("UI_STACK_TRIM");
     int trim = UI_STACK_TRIM_DEFAULT;
