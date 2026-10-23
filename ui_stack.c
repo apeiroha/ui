@@ -204,12 +204,25 @@ ui_stack_arenas_destroy(void)
 
 /* Hand the physical pages of the committed region back to the kernel.
  *
- * Only the part that was actually touched is returned: the goroutine
- * records the lowest stack address it was ever seen at (stack_low), and
- * the pages below it were never faulted in.  A shallow goroutine uses a
- * couple of pages, so this trims ~16x less memory than the whole
- * committed region (128KB by default) - and the madvise cost is
- * proportional to the range that is walked. */
+ * The whole committed region is returned, not just the part the
+ * goroutine was *seen* to use.
+ *
+ * An earlier version bounded the range with a low-water mark: the
+ * lowest stack pointer the goroutine was observed at, sampled when it
+ * switched out.  That is wrong for any goroutine that recurses deeply
+ * and then returns - the frames are gone by the time it switches out,
+ * so the mark stays near the top and the deep pages are never
+ * returned.  Measured: a goroutine that used 64KB of stack left all of
+ * it resident, and once those goroutines filled the pool the resident
+ * set grew to hundreds of MB no matter which trim advice was used
+ * (MADV_DONTNEED, the "lowest resident set" policy, could not bring it
+ * down at all).  Trimming the committed region fixes that: the same
+ * workload goes from 364MB resident to 2.6MB under MADV_DONTNEED, at a
+ * cost of a few percent on the shallow spawn path.
+ *
+ * The madvise range is the committed region (128KB by default, 32
+ * pages); the cost is proportional to the pages that are actually
+ * resident, since the kernel skips the rest. */
 static void
 ui_stack_trim_range(ui_Goro *g, int advice)
 {
@@ -218,17 +231,6 @@ ui_stack_trim_range(ui_Goro *g, int advice)
     char *base = (char *)g->stack_base;
     char *top  = base + g->stack_reserve;
     char *start = top - g->stack_committed;      /* committed region start */
-    if (g->stack_low)
-    {
-        char *low = (char *)g->stack_low;
-        if (low > start && low < top)
-        {
-            /* madvise() needs a page-aligned start; round DOWN so the
-             * page that holds the deepest used address is included. */
-            size_t ps = (size_t)(g->page_size > 0 ? g->page_size : UI_PAGE_SIZE);
-            start = (char *)((uintptr_t)low & ~((uintptr_t)ps - 1));
-        }
-    }
     if (start >= top)
         return;
 #ifdef UI_DEBUG_STACK_TRIM

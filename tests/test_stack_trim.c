@@ -132,16 +132,16 @@ check_trim_bound(const char *name)
 
 static volatile char sink;
 
-/* A goroutine that uses half a megabyte of stack and yields *while it
- * is deep*.
+/* A goroutine that uses half a megabyte of stack and then returns,
+ * unwinding its frames on the way out.
  *
- * The yield at the deepest point is what makes the pages visible to
- * the trim: the low-water mark of a stack is sampled when the
- * goroutine switches out, so a goroutine that recursed to 512KB and
- * then returned - unwinding its frames on the way out - would leave no
- * trace of its depth and its pages would stay resident.  That is a
- * real property of the implementation, and the reason the yield is
- * here. */
+ * The trim must not depend on the goroutine being *seen* at its
+ * deepest: the low-water mark is sampled when it switches out, and by
+ * then the deep frames are gone.  An earlier version bounded the trim
+ * with that mark, which left deep goroutines' pages resident forever
+ * (measured: 364MB resident for a deep workload under MADV_DONTNEED,
+ * the "lowest resident set" policy).  This workload has no yield while
+ * deep on purpose - it is the regression test for that. */
 static void
 touch_stack(int depth)
 {
@@ -153,7 +153,6 @@ touch_stack(int depth)
         buf[i] = (char)(depth + i);
     if (depth == 0)
     {
-        ui_Yield();                /* the deepest point of the stack */
         sink = buf[0];
         return;
     }
@@ -167,18 +166,50 @@ deep_worker(void)
     touch_stack(DEEP_LEVELS);
 }
 
-/* Run the deep workload and report the resident set afterwards. */
+/* Run the deep workload and report the resident set afterwards.
+ *
+ * Several goroutines, not one: a single stack's pages are a rounding
+ * error in the process RSS, and the point is what the *pool* keeps. */
+#define DEEP_N 64
+
 static long
 resident_after_deep_run(void)
 {
     if (ui_Init() != 0)
         return -1;
     spawn_done = 0;
-    ui_GoSized(deep_worker, DEEP_STACK);
+    for (int i = 0; i < DEEP_N; i++)
+        ui_GoSized(deep_worker, DEEP_STACK);
     ui_Run();
     long after = rss_kb();
     ui_Fini();
     return after;
+}
+
+static void
+check_resident_deep(ui_StackTrimPolicy policy, int expect_returned,
+                    const char *name)
+{
+    ui_SetStackTrimPolicy(UI_STACK_TRIM_NONE);
+    ui_SetStackMemoryLimit(0);
+    long kept_after = resident_after_deep_run();
+
+    ui_SetStackTrimPolicy(policy);
+    ui_SetStackMemoryLimit(0);
+    long after = resident_after_deep_run();
+
+    if (after < 0 || kept_after < 0)
+    {
+        check(0, name);
+        return;
+    }
+    /* DEEP_N goroutines * 512KB of touched stack, in kB. */
+    long deep_kb = (long)DEEP_N * (DEEP_LEVELS * 4);
+    long kept = kept_after > after ? kept_after - after : 0;
+    if (expect_returned)
+        check(kept >= deep_kb / 2, name);
+    else
+        check(kept < deep_kb / 2, name);
 }
 
 static void
@@ -236,6 +267,14 @@ main(void)
                    "MADV_FREE keeps the pages resident until pressure");
     check_resident(UI_STACK_TRIM_NONE, 0,
                    "keeping the pages returns nothing to the kernel");
+
+    /* The deep goroutine's pages are returned too.  This is the
+     * regression test for the low-water bound: the goroutine recurses
+     * to 512KB and returns without ever yielding while deep, so a trim
+     * driven by "the deepest address we have seen" would leave every
+     * one of those pages resident. */
+    check_resident_deep(UI_STACK_TRIM_DONTNEED, 1,
+                        "a goroutine that recursed deep has its pages returned");
 
     printf("\n=== Results: %d passed, %d failed ===\n", passed, failed);
     return failed ? 1 : 0;
