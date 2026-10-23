@@ -263,7 +263,10 @@ bench_rss_deep(ui_bench_ctx *b, int n)
 static const st_cfg cfg_free    = { UI_STACK_TRIM_FREE, 0, 0 };
 static const st_cfg cfg_strict  = { UI_STACK_TRIM_DONTNEED, 0, 0 };
 static const st_cfg cfg_keep    = { UI_STACK_TRIM_NONE, 0, 0 };
-static const st_cfg cfg_budget  = { UI_STACK_TRIM_FREE, 1, 4 * 1024 * 1024 };
+/* The budget alone means "memory first": it switches the advice to the
+ * strict one.  Here the policy is set explicitly so the measurement is
+ * not order-dependent (the API setting sticks for the process). */
+static const st_cfg cfg_budget  = { UI_STACK_TRIM_DONTNEED, 1, 4 * 1024 * 1024 };
 
 int
 main(int argc, char **argv)

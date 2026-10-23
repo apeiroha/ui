@@ -107,7 +107,7 @@ pair 三种模式，最后一种基于记录里内嵌的 baseline 和预先算�
 | `UI_NVCPUS` | vCPU 数量（1–64） | CPU 核数 |
 | `UI_YIELD_IO_MASK` | 连续 I/O 完成每 N 次自愿让出，0 关闭 | 255 |
 | `UI_IDLE_WAIT_MS` | 空闲 vCPU 的兜底唤醒超时（ms）。所有真实唤醒源都是事件驱动的，这个值只兜底“丢唤醒”，并直接决定空载 CPU | 100 |
-| `UI_STACK_TRIM` | 回收 goro 时栈页的归还方式：0 保留（最快，RSS 按池上限增长）、1 `MADV_FREE`（延迟归还，内核在内存压力下回收）、2 `MADV_DONTNEED`（立即归还，RSS 最低） | 1 |
+| `UI_STACK_TRIM` | 回收 goro 时栈页的归还方式：0 保留（**默认**，最快，RSS 按池上限增长）、1 `MADV_FREE`（延迟归还，内核在内存压力下回收）、2 `MADV_DONTNEED`（立即归还，RSS 最低） | 0 |
 | `UI_STACK_MEMORY_LIMIT` | goro 池可占用的栈内存上限（字节）。0 = 不限（速度优先）；非 0 = 内存优先：自动切到 `MADV_DONTNEED` 并给池封顶，超预算的栈直接归还内核。**只约束池，不含存活 goro 的栈** | 0 |
 
 > `UI_STACK_RELEASE_ON_RECYCLE` 已废弃：它从来只被读取、从未被使用，设置它没有任何效果。
@@ -167,20 +167,30 @@ spawn 失败语义：
 栈内存策略（速度 vs 内存）：
 
 ```c
-ui_SetStackTrimPolicy(UI_STACK_TRIM_FREE);      /* 默认：回收最快 */
-ui_SetStackMemoryLimit(4 * 1024 * 1024);         /* 内存优先：池最多保留 4MB */
+ui_SetStackTrimPolicy(UI_STACK_TRIM_NONE);       /* 默认：保留页，回收最快 */
+ui_SetStackMemoryLimit(4 * 1024 * 1024);         /* 需要内存上限时用这个 */
 ```
 
-两者的取舍是**直接耦合**的：快速策略（`MADV_FREE`）之所以快，正因为它不立即归还页，
-而不归还就意味着常驻高水位上去了。实测（4 vCPU，稳态 spawn 20 万次）：
+回收 goro 的代价主要不是 TLB shootdown，而是 `madvise` 这个系统调用本身。实测
+（4 vCPU，稳态 spawn 40 万次）：
 
 | 配置 | ns/op | 常驻内存 |
 |---|---|---|
-| 默认（`MADV_FREE`，不设预算） | ~2100 | ~22 MB |
-| `UI_STACK_TRIM=2`（严格回收） | ~3200 | ~3.2 MB |
-| 预算 4 MB（严格回收 + 池封顶） | ~3000 | ~2.5 MB |
+| `NONE`（默认，保留页） | 298 | 23.8 MB |
+| `MADV_FREE` | 1994 | 18.4 MB |
+| `MADV_DONTNEED` | 3022 | 2.6 MB |
+| `NONE` + 4MB 预算 | 866 | 5.7 MB |
+| `MADV_DONTNEED` + 4MB 预算 | 2927 | 1.6 MB |
 
-预算只约束**池**里空闲 goro 的栈；存活 goro 的栈不在预算内。
+（400k 次稳态 spawn，3 次取中位数。）
+
+`MADV_FREE` 确实能少占约 5MB，但代价是 6.5 倍的延迟。**要低常驻内存，
+预算比策略更划算**：`NONE` + 4MB 预算比 `MADV_FREE` **又快 2.3 倍又省
+3 倍**——真正把页还回去的是"丢弃池里的栈"，不是 madvise 的 advice。
+`MADV_FREE` 只在"无 swap 的容器里、池又必须保持很大"这一种情况下才合适。
+
+预算只约束**池**里空闲 goro 的栈；存活 goro 的栈不在预算内，且估算偏宽松，
+当作软上限使用。
 
 ## iroha 绑定
 

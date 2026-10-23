@@ -16,27 +16,42 @@ void     ui_Fini(void);
 
 /* ── Stack memory policy ──
  *
- * A goroutine's stack is 8MB of address space; how much of it is
- * actually resident is a policy choice:
+ * A goroutine's stack is 8MB of address space, of which 128KB is
+ * committed; how much of the committed part stays resident when the
+ * goroutine goes back to the pool is a policy choice:
  *
- *   UI_STACK_TRIM_NONE     keep the pages.  Fastest recycle, the
- *                           resident set follows the goroutine pool.
- *   UI_STACK_TRIM_FREE     MADV_FREE (default): pages are marked free
- *                           and reclaimed lazily by the kernel.
- *   UI_STACK_TRIM_DONTNEED MADV_DONTNEED: pages are unmapped at once,
- *                           the resident set tracks the live set.
+ *   UI_STACK_TRIM_NONE     (default) keep the pages.  Fastest recycle;
+ *                           the resident set follows the pool.
+ *   UI_STACK_TRIM_FREE     MADV_FREE: the pages are marked free and
+ *                           reclaimed lazily, when the kernel is short
+ *                           of memory.
+ *   UI_STACK_TRIM_DONTNEED MADV_DONTNEED: the pages are unmapped at
+ *                           once, so the resident set tracks the live
+ *                           set instead of the pool.
  *
- * The trade-off is direct: the fast policies leave pages resident (that
- * is why they are fast), the strict one costs a TLB shootdown per
- * recycle.  Measured on 4 vCPU (steady-state spawn of 200k goroutines):
- * FREE ~2000 ns/op with a ~23MB resident set, DONTNEED ~3350 ns/op with
- * ~2.7MB.
+ * The cost is dominated by the madvise call itself, not by the TLB
+ * shootdown: measured on 4 vCPU at 400k steady-state spawns (median of
+ * 3 runs),
  *
- * ui_SetStackMemoryLimit() adds a second knob: it caps how much stack
- * memory the goroutine pool may keep.  A limit of 0 means "no cap" and
- * leaves the policy alone; a non-zero limit switches to the strict
- * policy and makes the pool drop (and unmap) stacks once the budget is
- * exhausted.  Stacks of *live* goroutines are not covered by the cap.
+ *   NONE         298 ns/op   23.8 MB
+ *   MADV_FREE   1994 ns/op   18.4 MB
+ *   DONTNEED    3022 ns/op    2.6 MB
+ *   NONE + 4MB   866 ns/op    5.7 MB
+ *
+ * MADV_FREE does hand back ~5MB of resident set, but it costs 6.5x the
+ * latency to do it.  The memory budget is the better tool for that job:
+ * NONE + a 4MB limit is both 2.3x faster AND 3x leaner than MADV_FREE,
+ * because what actually returns the pages is dropping the pooled
+ * stacks, not the advice.  MADV_FREE is the right choice only in a
+ * deployment with no swap where the pool must stay large; everywhere
+ * else, prefer the budget.
+ *
+ * ui_SetStackMemoryLimit() is the knob for a deployment that needs a
+ * bound: alongside the strict policy it makes the pool drop stacks once
+ * the budget is exhausted.  A limit of 0 leaves the policy alone.  The
+ * budget covers the POOL; the stacks of *live* goroutines are not part
+ * of it, and the accounting is an estimate (a lenient one), so treat
+ * the budget as a soft cap.
  */
 typedef enum {
     UI_STACK_TRIM_NONE     = 0,
