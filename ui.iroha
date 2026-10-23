@@ -27,7 +27,12 @@ extern func SetIdleWaitMs(ms uint32) int
 extern func GetIdleWaitMs() uint32
 
 // ── Stack memory policy (env: UI_STACK_TRIM / UI_STACK_MEMORY_LIMIT) ──
-// policy: 0 = keep the pages, 1 = MADV_FREE, 2 = MADV_DONTNEED.
+// SetStackMemoryLimit() only switches the policy implicitly when no
+// explicit policy was set, so pair it with an explicit SetStackTrimPolicy.
+const StackTrimNone     = 0   // keep the pages (default)
+const StackTrimFree     = 1   // MADV_FREE
+const StackTrimDontNeed = 2   // MADV_DONTNEED
+
 extern func SetStackTrimPolicy(policy int) int
 extern func GetStackTrimPolicy() int
 extern func SetStackMemoryLimit(bytes uint) int

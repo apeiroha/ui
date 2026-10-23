@@ -59,6 +59,9 @@ typedef enum {
     UI_STACK_TRIM_DONTNEED = 2,
 } ui_StackTrimPolicy;
 
+/* The iroha binding names these ui.StackTrimNone / ui.StackTrimFree /
+ * ui.StackTrimDontNeed; see ui.iroha and the README. */
+
 int         ui_SetStackTrimPolicy(ui_StackTrimPolicy policy);
 int         ui_GetStackTrimPolicy(void);
 int         ui_SetStackMemoryLimit(size_t bytes);

@@ -204,6 +204,45 @@ ui_SetStackMemoryLimit(4 * 1024 * 1024);         /* 需要内存上限时用这�
 生成的 `ui.iroha.c` 为编译器产物（已 gitignore），用 `iroha -c ui.iroha`
 按需生成。本仓库只维护源码，不包含生成产物。
 
+### 配置栈内存策略
+
+配置必须在 `ui.Init()` **之前**（vCPU 线程在 `Init` 里创建）。策略常量是
+`ui.StackTrimNone` / `ui.StackTrimFree` / `ui.StackTrimDontNeed`，
+内存预算的单位是字节：
+
+```iroha
+import "ui"
+
+func main() {
+    // ── 三种策略 ──
+    ui.SetStackTrimPolicy(ui.StackTrimNone)      // 保留页（默认，其实不用设）
+    ui.SetStackTrimPolicy(ui.StackTrimFree)      // MADV_FREE
+    ui.SetStackTrimPolicy(ui.StackTrimDontNeed)  // MADV_DONTNEED
+
+    // ── 带内存预算（预算 = 池里空闲栈的上限，字节）──
+    // NONE + 4MB：先设策略，再设预算
+    ui.SetStackTrimPolicy(ui.StackTrimNone)
+    ui.SetStackMemoryLimit(uint(4 * 1024 * 1024))
+
+    // FREE + 4MB：同样**先设策略**
+    // （只设预算、没显式设过策略时，会隐含切成 DONTNEED）
+    ui.SetStackTrimPolicy(ui.StackTrimFree)
+    ui.SetStackMemoryLimit(uint(4 * 1024 * 1024))
+
+    ui.Init()          // ← 配置必须在 Init 之前
+    ui.Run()
+    ui.Fini()
+}
+```
+
+等价的数字形式是 `0` / `1` / `2`；预算 0 表示不限。各档的实测吞吐与常驻内存
+见上面的「栈内存策略」一节，结论是：**要快就用 `NONE`（默认），要低常驻内存
+就用 `NONE` + 预算**。
+
+> 跨类型不做隐式转换，所以预算写成 `uint(4 * 1024 * 1024)`。
+> 三个运行期旋钮（`ui.SetNVCPUs` / `ui.SetYieldIOMask` / `ui.SetIdleWaitMs`）
+> 也在 `ui.iroha` 里，用法同上；`SetNVCPUs` 同样必须在 `Init()` 之前。
+
 ## 设计参考
 
 `report_photon_vs_ui_workstealing.md` 记录了与 Photon 的 work-stealing 竞态
