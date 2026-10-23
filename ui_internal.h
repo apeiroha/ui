@@ -92,7 +92,14 @@ extern uint32_t ui_yield_io_mask;
  *
  * Overridable via env UI_STACK_TRIM (0/1/2) at ui_Init() time, or at
  * runtime through ui_SetStackTrimPolicy(). */
-#define UI_STACK_TRIM_DEFAULT  UI_STACK_TRIM_FREE
+/* Keep the pages by default: a steady-state goroutine spawn costs 298ns
+ * with them kept, 1994ns under MADV_FREE and 3022ns under
+ * MADV_DONTNEED (400k spawns, median of 3).  MADV_FREE does hold ~5MB
+ * less (18.4 vs 23.8MB), but a deployment that wants a low resident set
+ * does better with ui_SetStackMemoryLimit(): NONE plus a 4MB budget is
+ * 866ns at 5.7MB, both faster and leaner than MADV_FREE.  Keep the
+ * default fast; let the budget handle memory. */
+#define UI_STACK_TRIM_DEFAULT  UI_STACK_TRIM_NONE
 extern int ui_stack_trim_policy;
 
 /* Cap on the stack memory the goroutine pool may keep (bytes).  0 = no
@@ -161,9 +168,14 @@ struct ui_Goro
     ui_StackArena *stack_arena;
     int       stack_slot;
     int       page_size;
-    /* Lowest stack address this goroutine has been seen at (absolute).
-     * 0 = unknown.  Used to hand back only the pages that were actually
-     * touched instead of the whole committed region. */
+    /* Lowest stack address this goroutine has been seen at (absolute),
+     * sampled when it switches out.  0 = unknown.
+     *
+     * This is only an ESTIMATE, and a low one: a goroutine that recurses
+     * and then returns has its frames gone by the time it switches out,
+     * so the mark stays near the top.  It is used for the stack memory
+     * budget (a soft cap, deliberately lenient) and NOT for the trim
+     * range, which always covers the whole committed region. */
     uintptr_t stack_low;
 
     ui_Func0  entry;
@@ -292,9 +304,11 @@ typedef struct
      * Go's 3us usleep before stealing a running P's runnext). */
     ui_Goro         *runnext;
     int              runnext_polls;   /* consecutive schedules from slot */
-    /* Recycles since the last hard trim of this vCPU's pool (see
-     * UI_STACK_TRIM_SWEEP_INTERVAL). */
+    /* Recycles since the last hard trim of this vCPU's pool, and where
+     * in the pool that sweep should start (the window rotates so the
+     * whole pool gets covered - see ui_goro_pool_sweep). */
     int              trim_sweep_count;
+    int              trim_sweep_at;
     /* Cache-line aligned: the vCPUs live in one array, so without this
      * the last fields of one vCPU share a cache line with the first
      * fields of the next one.  `runnext` in particular is written by

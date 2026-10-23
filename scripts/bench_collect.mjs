@@ -237,6 +237,13 @@ function sideRecord(acc) {
 // Single ref: `iters` runs of the binary, all samples pooled.
 function collectSingle(binDir, binary, iters, count, attempts) {
   const acc = new Map();
+  // A group whose driver does not build against this tree (a benchmark
+  // that needs an API the revision does not have) is not a failure: the
+  // run simply has no metrics for it.
+  if (!existsSync(resolve(binDir, binary))) {
+    console.warn(`[warn] ${binary}: not built in ${binDir}; skipping the group`);
+    return acc;
+  }
   let ok = 0;
   for (let tries = 1; tries <= attempts && ok < iters; tries++) {
     const parsed = attemptRun(binDir, binary, count, binary, tries);
@@ -259,11 +266,17 @@ function collectPair(headDir, baseDir, binary, iters, count, attempts) {
   // A baseline that predates a driver (the stack-policy benchmarks need
   // an API the baseline does not have) still gets measured on the head
   // side; those metrics simply have no counterpart to compare with.
-  if (!existsSync(resolve(baseDir, binary))) {
+  if (!existsSync(resolve(headDir, binary)) ||
+      !existsSync(resolve(baseDir, binary))) {
+    const missing = existsSync(resolve(headDir, binary)) ? "baseline" : "head";
     console.warn(
-      `[warn] ${binary}: no baseline build; measuring the head side only`,
+      `[warn] ${binary}: no ${missing} build; measuring the other side only`,
     );
-    return { head: collectSingle(headDir, binary, iters, count, attempts), base: new Map() };
+    const dir = existsSync(resolve(headDir, binary)) ? headDir : baseDir;
+    const measured = collectSingle(dir, binary, iters, count, attempts);
+    return dir === headDir
+      ? { head: measured, base: new Map() }
+      : { head: new Map(), base: measured };
   }
   let ok = 0;
   for (let tries = 1; tries <= attempts && ok < iters; tries++) {

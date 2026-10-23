@@ -72,10 +72,30 @@ vma_count(void)
 static int           st_done;
 static int           st_waves;
 static ui_bench_ctx *st_ctx;
+static int           st_deep_depth;   /* 0 = shallow worker */
+
+static volatile char st_sink;
+
+/* A goroutine that recurses `depth` frames deep and returns.  The
+ * writes are volatile rather than a memset: at -O3 the compiler can see
+ * that only buf[0] is ever read and shrink the touch to one byte, which
+ * would make this measure a single page of stack. */
+static void
+st_deep(int depth)
+{
+    volatile char buf[4096];
+    for (int i = 0; i < 4096; i += 64)
+        buf[i] = (char)(depth + i);
+    if (depth > 0)
+        st_deep(depth - 1);
+    st_sink = buf[depth & 4095];
+}
 
 static void
 st_child(void)
 {
+    if (st_deep_depth > 0)
+        st_deep(st_deep_depth);
     __sync_fetch_and_add(&st_done, 1);
 }
 
@@ -201,12 +221,52 @@ bench_vma_count(ui_bench_ctx *b, int n)
     ui_Fini();
 }
 
+/* The same measurements with a goroutine that uses ~64KB of stack.
+ *
+ * The trim can only return the pages a goroutine was *seen* to use: the
+ * low-water mark is sampled when the goroutine switches out, so a
+ * goroutine that recurses deeply and then returns leaves no trace of
+ * its depth.  The resident set of the pool is then driven by the peak
+ * stack depth, not by the live set, and no trim policy changes that.
+ * These two metrics are what make that visible. */
+#define DEEP_FRAMES 16
+
+static void
+bench_warm_deep(ui_bench_ctx *b, int n)
+{
+    apply_cfg((const st_cfg *)b->arg);
+    st_deep_depth = DEEP_FRAMES;
+    ui_Init();
+    run_workload(b, n);
+    ui_bench_set_ops(b, n);
+    st_deep_depth = 0;
+    ui_Fini();
+}
+
+static void
+bench_rss_deep(ui_bench_ctx *b, int n)
+{
+    apply_cfg((const st_cfg *)b->arg);
+    st_deep_depth = DEEP_FRAMES;
+    ui_Init();
+    double ns = run_workload(b, n);
+    double mib = rss_mib();
+    ui_bench_set_ops(b, n);
+    ui_bench_report(b, mib, "MiB");
+    ui_bench_report_extra(b, "spawn", ns, "ns/op");
+    st_deep_depth = 0;
+    ui_Fini();
+}
+
 /* ── Main ── */
 
 static const st_cfg cfg_free    = { UI_STACK_TRIM_FREE, 0, 0 };
 static const st_cfg cfg_strict  = { UI_STACK_TRIM_DONTNEED, 0, 0 };
 static const st_cfg cfg_keep    = { UI_STACK_TRIM_NONE, 0, 0 };
-static const st_cfg cfg_budget  = { UI_STACK_TRIM_FREE, 1, 4 * 1024 * 1024 };
+/* The budget alone means "memory first": it switches the advice to the
+ * strict one.  Here the policy is set explicitly so the measurement is
+ * not order-dependent (the API setting sticks for the process). */
+static const st_cfg cfg_budget  = { UI_STACK_TRIM_DONTNEED, 1, 4 * 1024 * 1024 };
 
 int
 main(int argc, char **argv)
@@ -234,6 +294,14 @@ main(int argc, char **argv)
 
     ui_bench_add("bench_stack", "VMA count (1000 goroutines)", bench_vma_count,
                  NULL, 1000);
+
+    /* 25000 rather than 50000: those two are the expensive ones (a deep
+     * frame costs ~8us per goroutine) and the resident set reaches its
+     * steady state long before. */
+    ui_bench_add("bench_stack", "goroutine spawn+exit (deep stack, 64KB)",
+                 bench_warm_deep, (void *)&cfg_free, 25000);
+    ui_bench_add("bench_stack", "stack pool RSS (deep stack, DONTNEED)",
+                 bench_rss_deep, (void *)&cfg_strict, 25000);
 
     int rc = ui_bench_main(argc, argv);
     printf("\n=== Done ===\n");

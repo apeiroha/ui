@@ -31,8 +31,8 @@ main(void)
     printf("=== UI stack policy tests ===\n");
 
     /* ── defaults ── */
-    check(ui_GetStackTrimPolicy() == UI_STACK_TRIM_FREE,
-          "default trim policy is MADV_FREE (speed first)");
+    check(ui_GetStackTrimPolicy() == UI_STACK_TRIM_NONE,
+          "default trim policy is NONE (keep the pages)");
     check(ui_StackMemoryLimit() == 0, "default memory limit is 0 (no budget)");
 
     /* ── policy setter ── */
@@ -61,6 +61,7 @@ main(void)
     ui_SetStackMemoryLimit(0);
     check(ui_GetStackTrimPolicy() == UI_STACK_TRIM_FREE,
           "clearing the budget keeps the explicit policy");
+    ui_SetStackTrimPolicy(UI_STACK_TRIM_NONE);
 
     /* ── functional: the pool respects the budget ── */
     {
