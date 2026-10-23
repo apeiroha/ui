@@ -102,16 +102,22 @@ pair 三种模式，最后一种基于记录里内嵌的 baseline 和预先算�
 
 ## 环境变量
 
-| 变量 | 作用 | 默认 |
-|------|------|------|
-| `UI_NVCPUS` | vCPU 数量（1–64） | CPU 核数 |
-| `UI_YIELD_IO_MASK` | 连续 I/O 完成每 N 次自愿让出，0 关闭 | 255 |
-| `UI_IDLE_WAIT_MS` | 空闲 vCPU 的兜底唤醒超时（ms）。所有真实唤醒源都是事件驱动的，这个值只兜底“丢唤醒”，并直接决定空载 CPU | 100 |
-| `UI_STACK_TRIM` | 回收 goro 时栈页的归还方式：0 保留（**默认**，最快，RSS 按池上限增长）、1 `MADV_FREE`（延迟归还，内核在内存压力下回收）、2 `MADV_DONTNEED`（立即归还，RSS 最低） | 0 |
-| `UI_STACK_MEMORY_LIMIT` | goro 池可占用的栈内存上限（字节）。0 = 不限（速度优先）；非 0 = 内存优先：自动切到 `MADV_DONTNEED` 并给池封顶，超预算的栈直接归还内核。**只约束池，不含存活 goro 的栈** | 0 |
+每个变量都有一个等价的 API，**API 的显式调用优先于环境变量**：
+
+| 变量 | 作用 | 默认 | API |
+|------|------|------|-----|
+| `UI_NVCPUS` | vCPU 数量（1–64） | CPU 核数 | `ui_SetNVCPUs()`（须在 `ui_Init()` 前；之后再调返回 −1 且 `errno=EBUSY`） |
+| `UI_YIELD_IO_MASK` | 连续 I/O 完成每 N 次自愿让出，0 关闭 | 255 | `ui_SetYieldIOMask()` / `ui_GetYieldIOMask()` |
+| `UI_IDLE_WAIT_MS` | 空闲 vCPU 的兜底唤醒超时（ms）。所有真实唤醒源都是事件驱动的，这个值只兜底“丢唤醒”，并直接决定空载 CPU | 100 | `ui_SetIdleWaitMs()` / `ui_GetIdleWaitMs()` |
+| `UI_STACK_TRIM` | 回收 goro 时栈页的归还方式：0 保留（**默认**，最快，RSS 按池上限增长）、1 `MADV_FREE`（延迟归还，内核在内存压力下回收）、2 `MADV_DONTNEED`（立即归还，RSS 最低） | 0 | `ui_SetStackTrimPolicy()` / `ui_GetStackTrimPolicy()` |
+| `UI_STACK_MEMORY_LIMIT` | goro 池可占用的栈内存上限（字节）。0 = 不限（速度优先）；非 0 且**未显式设过策略**时切到 `MADV_DONTNEED` 并给池封顶，超预算的栈直接归还内核。**只约束池，不含存活 goro 的栈** | 0 | `ui_SetStackMemoryLimit()` / `ui_StackMemoryLimit()` |
 
 > `UI_STACK_RELEASE_ON_RECYCLE` 已废弃：它从来只被读取、从未被使用，设置它没有任何效果。
 > 现在用 `UI_STACK_TRIM` 选择实际的 madvise 策略。
+
+> `ui_SetStackMemoryLimit()` 隐含的“切到 `MADV_DONTNEED`”只在**调用方没显式设过策略**时发生，
+> 所以顺序敏感：先 `ui_SetStackTrimPolicy(UI_STACK_TRIM_FREE)` 再设预算，策略仍是 `FREE`，
+> 预算只负责给池封顶。
 
 ## 快速上手
 

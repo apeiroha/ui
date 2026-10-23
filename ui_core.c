@@ -45,6 +45,14 @@ static int ui_stack_trim_policy_api = -1;
 static unsigned long long ui_stack_memory_limit_api;
 static int ui_stack_memory_limit_api_set;
 
+/* Runtime tuning, same precedence rule as the stack policy: an API call
+ * wins over the environment.  0 = not set through the API. */
+static int ui_nvcpus_api;
+static uint32_t ui_yield_io_mask_api;
+static int ui_yield_io_mask_api_set;
+static uint32_t ui_idle_wait_ms_api;
+static int ui_idle_wait_ms_api_set;
+
 /* Estimated resident bytes of a goroutine's stack: the pages between
  * the stack top and the deepest address the goroutine was ever seen at.
  *
@@ -1180,6 +1188,62 @@ ui_StackMemoryLimit(void)
     return (size_t)ui_stack_memory_limit;
 }
 
+/* ── Runtime tuning (public API) ── */
+
+int
+ui_SetNVCPUs(int n)
+{
+    if (n < 1 || n > UI_MAX_VCPUS)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    /* The vCPU threads are created by ui_Init(); after that the request
+     * cannot be honoured, and saying so beats silently ignoring it. */
+    if (g_ui_sched.initialized)
+    {
+        errno = EBUSY;
+        return -1;
+    }
+    ui_nvcpus_api = n;
+    return 0;
+}
+
+int
+ui_SetYieldIOMask(uint32_t n)
+{
+    ui_yield_io_mask_api = n;
+    ui_yield_io_mask_api_set = 1;
+    ui_yield_io_mask = n;
+    return 0;
+}
+
+uint32_t
+ui_GetYieldIOMask(void)
+{
+    return ui_yield_io_mask;
+}
+
+int
+ui_SetIdleWaitMs(uint32_t ms)
+{
+    if (ms < 1)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    ui_idle_wait_ms_api = ms;
+    ui_idle_wait_ms_api_set = 1;
+    ui_idle_wait_ms = ms;
+    return 0;
+}
+
+uint32_t
+ui_GetIdleWaitMs(void)
+{
+    return ui_idle_wait_ms;
+}
+
 /* Report the goroutine ceiling imposed by the kernel's VMA limit.
  *
  * Every goroutine stack costs about two VMAs (the arena is PROT_NONE and
@@ -1226,6 +1290,8 @@ ui_Init(void)
     /* Allow override via environment for testing */
     const char *env_ncpus = getenv("UI_NVCPUS");
     if (env_ncpus) { int n = atoi(env_ncpus); if (n >= 1 && n <= UI_MAX_VCPUS) ncpus = n; }
+    /* An explicit ui_SetNVCPUs() wins over the environment. */
+    if (ui_nvcpus_api > 0) ncpus = ui_nvcpus_api;
     /* Stack trim policy.  UI_STACK_RELEASE_ON_RECYCLE was accepted but
      * never read by the recycle path, so it had no effect at all; it is
      * deprecated in favour of UI_STACK_TRIM, which selects what happens
@@ -1276,6 +1342,9 @@ ui_Init(void)
     if (env_yield) { int n = atoi(env_yield); if (n >= 0) ui_yield_io_mask = (uint32_t)n; }
     const char *env_idle = getenv("UI_IDLE_WAIT_MS");
     if (env_idle) { int n = atoi(env_idle); if (n >= 1) ui_idle_wait_ms = (uint32_t)n; }
+    /* Explicit API calls win over the environment for both. */
+    if (ui_yield_io_mask_api_set) ui_yield_io_mask = ui_yield_io_mask_api;
+    if (ui_idle_wait_ms_api_set) ui_idle_wait_ms = ui_idle_wait_ms_api;
     ui_check_map_count_limit();
     g_ui_sched.nvcpus = ncpus;
     atomic_store(&g_ui_sched.next_vcpu, 0);
