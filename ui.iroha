@@ -1,6 +1,14 @@
 package ui
 
 // ── Lifecycle ──
+// The generated entry point of an iroha program that imports "ui" already
+// drives these, with the user's main running inside the runtime:
+//
+//     int main() { ui_Init(); ui_Go(_iroha_user_main); ui_Run(); ui_Fini(); }
+//
+// So iroha code must NOT call them: a second Init is a no-op, and calling
+// Fini from a goroutine tears down the runtime that goroutine is running
+// on (it segfaults). They are declared for the compiler's code generation.
 extern func Init() int
 extern func Run()
 extern func Fini()
