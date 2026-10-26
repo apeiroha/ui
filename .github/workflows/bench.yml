@@ -33,7 +33,7 @@ concurrency:
 jobs:
   bench:
     name: collect + publish
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       # Which two refs to measure, and what to label the run with, come
       # from the event. The pair is always "head" (the new code) vs

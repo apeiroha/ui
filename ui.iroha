@@ -1,6 +1,14 @@
 package ui
 
 // ── Lifecycle ──
+// The generated entry point of an iroha program that imports "ui" already
+// drives these, with the user's main running inside the runtime:
+//
+//     int main() { ui_Init(); ui_Go(_iroha_user_main); ui_Run(); ui_Fini(); }
+//
+// So iroha code must NOT call them: a second Init is a no-op, and calling
+// Fini from a goroutine tears down the runtime that goroutine is running
+// on (it segfaults). They are declared for the compiler's code generation.
 extern func Init() int
 extern func Run()
 extern func Fini()
@@ -17,6 +25,31 @@ extern func GoOnSized(f uintptr, stack_size int, vcpu int) uint64
 extern func Go1On(fn uintptr, arg uintptr, vcpu int) uint64
 extern func Go1OnSized(fn uintptr, arg uintptr, stack_size int, vcpu int) uint64
 extern func NVCPUs() int
+
+// ── Runtime tuning (env: UI_NVCPUS / UI_YIELD_IO_MASK / UI_IDLE_WAIT_MS) ──
+// An API call wins over the environment. SetNVCPUs must come before Init().
+extern func SetNVCPUs(n int) int
+extern func SetYieldIOMask(n uint32) int
+extern func GetYieldIOMask() uint32
+extern func SetIdleWaitMs(ms uint32) int
+extern func GetIdleWaitMs() uint32
+
+// ── Stack memory policy (env: UI_STACK_TRIM / UI_STACK_MEMORY_LIMIT) ──
+// SetStackMemoryLimit() only switches the policy implicitly when no
+// explicit policy was set, so pair it with an explicit SetStackTrimPolicy.
+//
+// Written out value by value rather than with iota (which this language
+// does support): the number IS the ABI here, it mirrors ui_StackTrimPolicy
+// in ui.h - which also spells it out - and iota would let a reorder
+// change the number silently.
+const StackTrimNone     = 0   // keep the pages (default)
+const StackTrimFree     = 1   // MADV_FREE
+const StackTrimDontNeed = 2   // MADV_DONTNEED
+
+extern func SetStackTrimPolicy(policy int) int
+extern func GetStackTrimPolicy() int
+extern func SetStackMemoryLimit(bytes uint) int
+extern func StackMemoryLimit() uint
 
 // ── Yield / Sleep ──
 extern func Yield()

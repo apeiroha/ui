@@ -238,6 +238,14 @@ $(BUILD_DIR)/test_goro_vma: $(TEST_GORO_VMA_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR
 test-goro-vma: $(BUILD_DIR)/test_goro_vma
 	timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_goro_vma
 
+TEST_RUNTIME_CONFIG_SRC = tests/test_runtime_config.c
+
+$(BUILD_DIR)/test_runtime_config: $(TEST_RUNTIME_CONFIG_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
+	$(CC) $(UI_CFLAGS) -I. -o $@ $^ $(LDFLAGS) $(_LIB)
+
+test-runtime-config: $(BUILD_DIR)/test_runtime_config
+	timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_runtime_config
+
 TEST_RUN_REENTRANT_SRC = tests/test_run_reentrant.c
 
 $(BUILD_DIR)/test_run_reentrant: $(TEST_RUN_REENTRANT_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
@@ -324,13 +332,14 @@ bench-ui-perf:
         test-sched-iopark test-spawn-steal test-lifo-slot test-stack-overflow \
         test-polladd-degraded test-audit test-cycle-stress test-spawn-api \
         test-run-reentrant test-stack-policy test-stack-trim test-goro-vma \
+        test-runtime-config \
         bench-ui bench-ui-io bench-stack bench-json bench-stat bench-build \
         web-install web-build web-test libui clean
 
 test: test-ui test-c8-race test-p0 test-udp-echo test-sched-iopark \
        test-spawn-steal test-idle-wait test-stack-overflow test-polladd-degraded \
        test-audit test-cycle-stress test-spawn-api test-run-reentrant \
-       test-stack-policy test-stack-trim test-goro-vma
+       test-stack-policy test-stack-trim test-goro-vma test-runtime-config
 
 all: libui
 

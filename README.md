@@ -102,16 +102,22 @@ pair 三种模式，最后一种基于记录里内嵌的 baseline 和预先算�
 
 ## 环境变量
 
-| 变量 | 作用 | 默认 |
-|------|------|------|
-| `UI_NVCPUS` | vCPU 数量（1–64） | CPU 核数 |
-| `UI_YIELD_IO_MASK` | 连续 I/O 完成每 N 次自愿让出，0 关闭 | 255 |
-| `UI_IDLE_WAIT_MS` | 空闲 vCPU 的兜底唤醒超时（ms）。所有真实唤醒源都是事件驱动的，这个值只兜底“丢唤醒”，并直接决定空载 CPU | 100 |
-| `UI_STACK_TRIM` | 回收 goro 时栈页的归还方式：0 保留（**默认**，最快，RSS 按池上限增长）、1 `MADV_FREE`（延迟归还，内核在内存压力下回收）、2 `MADV_DONTNEED`（立即归还，RSS 最低） | 0 |
-| `UI_STACK_MEMORY_LIMIT` | goro 池可占用的栈内存上限（字节）。0 = 不限（速度优先）；非 0 = 内存优先：自动切到 `MADV_DONTNEED` 并给池封顶，超预算的栈直接归还内核。**只约束池，不含存活 goro 的栈** | 0 |
+每个变量都有一个等价的 API，**API 的显式调用优先于环境变量**：
+
+| 变量 | 作用 | 默认 | API |
+|------|------|------|-----|
+| `UI_NVCPUS` | vCPU 数量（1–64） | CPU 核数 | `ui_SetNVCPUs()`（须在 `ui_Init()` 前；之后再调返回 −1 且 `errno=EBUSY`） |
+| `UI_YIELD_IO_MASK` | 连续 I/O 完成每 N 次自愿让出，0 关闭 | 255 | `ui_SetYieldIOMask()` / `ui_GetYieldIOMask()` |
+| `UI_IDLE_WAIT_MS` | 空闲 vCPU 的兜底唤醒超时（ms）。所有真实唤醒源都是事件驱动的，这个值只兜底“丢唤醒”，并直接决定空载 CPU | 100 | `ui_SetIdleWaitMs()` / `ui_GetIdleWaitMs()` |
+| `UI_STACK_TRIM` | 回收 goro 时栈页的归还方式：0 保留（**默认**，最快，RSS 按池上限增长）、1 `MADV_FREE`（延迟归还，内核在内存压力下回收）、2 `MADV_DONTNEED`（立即归还，RSS 最低） | 0 | `ui_SetStackTrimPolicy()` / `ui_GetStackTrimPolicy()` |
+| `UI_STACK_MEMORY_LIMIT` | goro 池可占用的栈内存上限（字节）。0 = 不限（速度优先）；非 0 且**未显式设过策略**时切到 `MADV_DONTNEED` 并给池封顶，超预算的栈直接归还内核。**只约束池，不含存活 goro 的栈** | 0 | `ui_SetStackMemoryLimit()` / `ui_StackMemoryLimit()` |
 
 > `UI_STACK_RELEASE_ON_RECYCLE` 已废弃：它从来只被读取、从未被使用，设置它没有任何效果。
 > 现在用 `UI_STACK_TRIM` 选择实际的 madvise 策略。
+
+> `ui_SetStackMemoryLimit()` 隐含的“切到 `MADV_DONTNEED`”只在**调用方没显式设过策略**时发生，
+> 所以顺序敏感：先 `ui_SetStackTrimPolicy(UI_STACK_TRIM_FREE)` 再设预算，策略仍是 `FREE`，
+> 预算只负责给池封顶。
 
 ## 快速上手
 
@@ -197,6 +203,57 @@ ui_SetStackMemoryLimit(4 * 1024 * 1024);         /* 需要内存上限时用这�
 `ui.iroha` 是 iroha 语言的 FFI 绑定（纯 extern 声明，对应本库的 C ABI）。
 生成的 `ui.iroha.c` 为编译器产物（已 gitignore），用 `iroha -c ui.iroha`
 按需生成。本仓库只维护源码，不包含生成产物。
+
+### 配置栈内存策略
+
+iroha 程序里 `main` 由编译器生成的入口驱动，而且**就跑在 ui 运行时内部**。
+`import "ui"` 的程序，生成的 C 入口是：
+
+```c
+int main() { ui_Init(); ui_Go(_iroha_user_main); ui_Run(); ui_Fini(); }
+```
+
+由此有三条结论（都实测过）：
+
+1. **不要在 iroha 代码里调用 `ui.Init()` / `ui.Run()` / `ui.Fini()`** —— 生命周期
+   由生成的入口负责。从 goroutine 里调 `ui.Fini()` 会拆掉当前正在跑的那个运行时，
+   直接段错误（实测在 teardown 的 `munmap` 里炸）。
+2. **`main()` 开头的配置调用发生在 `ui_Init()` 之后**，但除了 `SetNVCPUs` 以外都
+   仍然有效：裁剪发生在**回收**时（`ui_Run()` 期间），而 `main` 就跑在 `ui_Run()` 里。
+3. **iroha 没有"main 之前"的钩子**（包级变量初值必须是编译期常量，函数调用会被
+   编译器拒绝），所以任何必须在 `ui_Init()` 之前生效的东西只能走环境变量。
+
+```iroha
+import "ui"
+
+func main() {
+    // 到这里 ui_Init() 已经跑过；下面这些依然生效
+    ui.SetStackTrimPolicy(ui.StackTrimDontNeed)
+    ui.SetStackMemoryLimit(uint(4 * 1024 * 1024))   // DONTNEED + 4MB 预算
+
+    // ... 业务 ...
+}   // 不要调 ui.Fini()，生成的入口会调
+```
+
+策略常量是 `ui.StackTrimNone` / `ui.StackTrimFree` / `ui.StackTrimDontNeed`
+（等价数字 `0` / `1` / `2`）；预算单位是字节，`0` 表示不限。跨类型不做隐式转换，
+所以预算写成 `uint(4 * 1024 * 1024)`。
+
+| 旋钮 | iroha 里怎么设 |
+|---|---|
+| 栈回收策略 / 内存预算 | `main()` 开头调 setter 即可（回收发生在 `ui_Run()` 期间） |
+| `UI_YIELD_IO_MASK` / `UI_IDLE_WAIT_MS` | 同上，`main()` 里调 setter |
+| vCPU 数 | **只能在启动前设环境变量 `UI_NVCPUS`**：vCPU 线程在 `ui_Init()` 里就建好了，`main` 里再调 `ui.SetNVCPUs()` 会返回 `-1`/`EBUSY` |
+
+环境变量则全部有效（要在进程启动前设好）：
+
+```sh
+UI_NVCPUS=4 UI_STACK_TRIM=2 UI_STACK_MEMORY_LIMIT=4194304 ./prog
+```
+
+> 顺序坑（C 与 iroha 一样）：`SetStackMemoryLimit()` 隐含的"切 `DONTNEED`"只在
+> **没显式设过策略**时发生。要 `FREE` + 预算，就得先 `SetStackTrimPolicy(StackTrimFree)`
+> 再设预算。各档实测吞吐与常驻内存见上面「栈内存策略」一节。
 
 ## 设计参考
 

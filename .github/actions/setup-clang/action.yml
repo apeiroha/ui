@@ -1,6 +1,14 @@
 name: setup-clang
 description: Install clang 19 (matching the dev toolchain) and musl
 
+# The jobs that use this must run on ubuntu-24.04 and NOT ubuntu-latest.
+# `llvm.sh` derives the apt source from the runner's codename, and
+# apt.llvm.org publishes llvm-toolchain-<codename>-19 only for the
+# releases it supports.  ubuntu-latest moved to 26.04 (resolute), where
+# that path is a 404, so `apt-get update` fails with exit 100 before a
+# single line of the project is built.  Pinning the runner keeps the
+# toolchain the one the project is developed against.
+
 runs:
   using: composite
   steps:

@@ -59,10 +59,47 @@ typedef enum {
     UI_STACK_TRIM_DONTNEED = 2,
 } ui_StackTrimPolicy;
 
+/* The iroha binding names these ui.StackTrimNone / ui.StackTrimFree /
+ * ui.StackTrimDontNeed; see ui.iroha and the README. */
+
 int         ui_SetStackTrimPolicy(ui_StackTrimPolicy policy);
 int         ui_GetStackTrimPolicy(void);
 int         ui_SetStackMemoryLimit(size_t bytes);
 size_t      ui_StackMemoryLimit(void);
+
+/* ── Runtime tuning ──
+ *
+ * Programmatic counterparts of the environment variables of the same
+ * name (UI_NVCPUS, UI_YIELD_IO_MASK, UI_IDLE_WAIT_MS).  A value set
+ * through the API wins over the environment, and over an earlier API
+ * call; without either, the default applies.
+ *
+ * ui_SetNVCPUs() must be called before ui_Init() - that is when the
+ * vCPU threads are created - and returns -1 with errno=EBUSY if the
+ * runtime is already running, rather than silently doing nothing.
+ *
+ * The other two may be called at any time and take effect from the
+ * next scheduling decision.  There is no synchronisation between the
+ * call and the vCPU threads reading the value; a plain store is fine
+ * here because a thread that sees either the old or the new value is
+ * behaving as documented.
+ *
+ *   YieldIOMask - give up the vCPU after every Nth I/O completion, so
+ *                 that a goroutine draining completions in a loop does
+ *                 not starve its own run queue.  0 disables it.
+ *   IdleWaitMs  - how long a parked vCPU waits before re-checking for
+ *                 work it was never told about.  Every real wake source
+ *                 (cross-vCPU wakeup, I/O completion, sleepq deadline)
+ *                 signals directly, so this only covers a lost wakeup -
+ *                 but it is also what decides the idle CPU cost, since
+ *                 a vCPU that finds nothing to do waits this long.
+ */
+int         ui_SetNVCPUs(int n);
+
+int         ui_SetYieldIOMask(uint32_t n);
+uint32_t    ui_GetYieldIOMask(void);
+int         ui_SetIdleWaitMs(uint32_t ms);
+uint32_t    ui_GetIdleWaitMs(void);
 
 uint64_t ui_Go(ui_Func0 f);
 uint64_t ui_GoSized(ui_Func0 f, int stack_size);
