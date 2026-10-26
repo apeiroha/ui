@@ -149,7 +149,7 @@ jobs:
         continue-on-error: true
         working-directory: base-src
         run: |
-          for t in bench_ui bench_ui_io bench_stack; do
+          for t in bench_ui bench_ui_io bench_stack bench_idle; do
             make "build/$t" BUILD=release TOOLCHAIN=clang CC=clang-19 \
               || echo "::warning::the baseline cannot build $t"
           done
