@@ -19,6 +19,8 @@ ui_chan_send_closed_fatal(void)
 
 struct ui_Chan
 {
+    /* NOTE: tests/test_audit.c mirrors this layout white-box (ChanView);
+     * keep the two in sync when adding/reordering fields. */
     void    *buf;
     size_t   elem_size;
     unsigned cap;    /* 逻辑容量：满/空判定与阻塞语义 */

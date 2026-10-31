@@ -115,13 +115,13 @@ static void r1_child(void)
 
 #define R2_NCH 1024
 #define R2_VIEW_FIELDS \
-    void *buf; size_t elem_size; unsigned cap, count, read_idx, write_idx; \
+    void *buf; size_t elem_size; unsigned cap, slots, mask, count, read_idx, write_idx; \
     int closed; pthread_spinlock_t lock; ui_WaitQ send_wait; ui_WaitQ recv_wait
 
 typedef struct {
     void *buf;
     size_t elem_size;
-    unsigned cap, count, read_idx, write_idx;
+    unsigned cap, slots, mask, count, read_idx, write_idx;
     int closed;
     pthread_spinlock_t lock;
     ui_WaitQ send_wait;
