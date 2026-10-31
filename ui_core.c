@@ -1280,7 +1280,6 @@ ui_Init(void)
 {
     if (g_ui_sched.initialized) return 0;
     memset(&g_ui_sched, 0, sizeof(g_ui_sched));
-    pthread_mutex_init(&g_ui_sched.global_lock, NULL);
     pthread_mutex_init(&g_ui_sched.goro_pool_lock, NULL);
     pthread_mutex_init(&g_ui_sched.stack_arena_lock, NULL);
     if (ui_setup_signal_handler() < 0) return -1;

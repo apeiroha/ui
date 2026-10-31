@@ -21,7 +21,9 @@ struct ui_Chan
 {
     void    *buf;
     size_t   elem_size;
-    unsigned cap;
+    unsigned cap;    /* 逻辑容量：满/空判定与阻塞语义 */
+    unsigned slots;  /* 分配槽位数 = ≥cap 的 2 的幂（索引用掩码） */
+    unsigned mask;   /* slots - 1 */
     unsigned count;
     unsigned read_idx;
     unsigned write_idx;
@@ -45,10 +47,17 @@ ui_NewChan(size_t elem_size, unsigned int buf_cap)
     if (!c) return 0;
 
     if (buf_cap == 0) buf_cap = 1; /* rendezvous is approximated as capacity 1 */
+    /* 环形索引用 2 的幂掩码（& mask）替代除法（% cap）：槽位数向上取 2 的幂，
+     * 逻辑容量 cap 保持原值，满/空判定与阻塞语义不变。超大容量钳到 2^30。 */
+    if (buf_cap > (1u << 30)) buf_cap = (1u << 30);
+    unsigned slots = 1;
+    while (slots < buf_cap) slots <<= 1;
 
     c->elem_size = elem_size;
     c->cap = buf_cap;
-    c->buf = calloc(c->cap, elem_size);
+    c->slots = slots;
+    c->mask = slots - 1;
+    c->buf = calloc((size_t)c->slots, elem_size);
     if (!c->buf) { free(c); return 0; }
 
     pthread_spin_init(&c->lock, PTHREAD_PROCESS_PRIVATE);
@@ -94,7 +103,7 @@ ui_ChanSend(uint64_t ch, const void *val)
 
         if (c->count < c->cap)
         {
-            unsigned pos = c->write_idx % c->cap;
+            unsigned pos = c->write_idx & c->mask;
             memcpy((char *)c->buf + pos * c->elem_size, val, c->elem_size);
             c->write_idx++;
             c->count++;
@@ -144,14 +153,14 @@ ui_ChanRecv(uint64_t ch, void *val)
                 /* Buffered channel: hand out the oldest value and append the
                  * blocked sender's value at the tail.  Direct handoff would
                  * deliver the new value ahead of the buffered ones. */
-                unsigned rpos = c->read_idx % c->cap;
+                unsigned rpos = c->read_idx & c->mask;
                 if (val)
                     memcpy(val, (char *)c->buf + rpos * c->elem_size,
                            c->elem_size);
                 c->read_idx++;
                 if (send_data)
                 {
-                    unsigned wpos = c->write_idx % c->cap;
+                    unsigned wpos = c->write_idx & c->mask;
                     memcpy((char *)c->buf + wpos * c->elem_size,
                            send_data, c->elem_size);
                 }
@@ -172,7 +181,7 @@ ui_ChanRecv(uint64_t ch, void *val)
 
         if (c->count > 0)
         {
-            unsigned pos = c->read_idx % c->cap;
+            unsigned pos = c->read_idx & c->mask;
             if (val)
                 memcpy(val, (char *)c->buf + pos * c->elem_size, c->elem_size);
             c->read_idx++;
@@ -218,7 +227,7 @@ ui_ChanTrySend(uint64_t ch, const void *val)
 
     if (c->count < c->cap)
     {
-        unsigned pos = c->write_idx % c->cap;
+        unsigned pos = c->write_idx & c->mask;
         memcpy((char *)c->buf + pos * c->elem_size, val, c->elem_size);
         c->write_idx++;
         c->count++;
@@ -240,7 +249,7 @@ ui_ChanTryRecv(uint64_t ch, void *val)
 
     if (c->count > 0)
     {
-        unsigned pos = c->read_idx % c->cap;
+        unsigned pos = c->read_idx & c->mask;
         if (val)
             memcpy(val, (char *)c->buf + pos * c->elem_size, c->elem_size);
         c->read_idx++;
@@ -284,7 +293,7 @@ ui_ChanFree(uint64_t ch)
      * (typically after ui_Run() returns and all goroutines are done). */
     ui_ChanClose(ch);
     pthread_spin_destroy(&c->lock);
-    memset(c->buf, 0xFD, c->cap * c->elem_size); /* debug canary */
+    memset(c->buf, 0xFD, (size_t)c->slots * c->elem_size); /* debug canary */
     free(c->buf);
     memset(c, 0xFC, sizeof(ui_Chan));             /* debug canary */
     free(c);
@@ -409,7 +418,7 @@ ui_select_try_recv(ui_Chan *c, void *buf)
 {
     if (c->count > 0)
     {
-        unsigned pos = c->read_idx % c->cap;
+        unsigned pos = c->read_idx & c->mask;
         if (buf)
             memcpy(buf, (char *)c->buf + pos * c->elem_size, c->elem_size);
         c->read_idx++;
@@ -437,7 +446,7 @@ ui_select_try_send(ui_Chan *c, const void *val)
     }
     if (c->count < c->cap)
     {
-        unsigned pos = c->write_idx % c->cap;
+        unsigned pos = c->write_idx & c->mask;
         memcpy((char *)c->buf + pos * c->elem_size, val, c->elem_size);
         c->write_idx++;
         c->count++;

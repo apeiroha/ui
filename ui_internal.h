@@ -325,7 +325,6 @@ typedef struct
     atomic_int       started;
     atomic_int       active_count;
     atomic_int       next_vcpu;
-    pthread_mutex_t  global_lock;
     /* Pool of goros with stacks preserved (never munmap'd).
      * Mutex-protected array; contention is negligible vs mmap savings. */
     ui_Goro         *goro_pool[UI_GORO_POOL_SIZE];
