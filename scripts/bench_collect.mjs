@@ -28,6 +28,7 @@ const GROUPS = [
   ["bench_ui", "bench_ui"],
   ["bench_ui_io", "bench_ui_io"],
   ["bench_stack", "bench_stack"],
+  ["bench_idle", "bench_idle"],
 ];
 // The pre-harness protocol: "  name   1234 ns/op  (N ops in Nus)".  Only
 // used as a fallback for a baseline build that predates the JSON output.

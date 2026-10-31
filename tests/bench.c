@@ -312,10 +312,12 @@ run_entry(ui_bench_entry *e)
      * arena and the heap), which shows up as a trend across the
      * samples rather than as random noise.
      *
-     * The syscall probe skips them: it counts the syscalls of exactly
-     * one round, so the counts are per operation. */
+     * Neither the syscall probe nor a once-only benchmark warms up: the
+     * first measures exactly one round, and the second exists for
+     * measurements where a warmup round is a waste of the wall clock
+     * (an idle-CPU window, say). */
     int probe = g_opt_probe_n > 0;
-    if (!probe)
+    if (!probe && !once)
     {
         for (int w = 0; w < 2; w++)
             run_sample(e, n, &out);
@@ -384,6 +386,19 @@ go_name(const char *in, char *out, size_t outsz)
     out[o] = '\0';
 }
 
+/* Magnitude-aware formatting for the human table.  The values now come
+ * in several units (ns/op, MiB, count, us, ms), so a fixed integer
+ * column would round the small ones away. */
+static void
+fmt_value(char *buf, size_t n, double v)
+{
+    double a = v < 0 ? -v : v;
+    if (a >= 100.0)      snprintf(buf, n, "%.0f", v);
+    else if (a >= 10.0)  snprintf(buf, n, "%.1f", v);
+    else if (a >= 1.0)   snprintf(buf, n, "%.2f", v);
+    else                 snprintf(buf, n, "%.3f", v);
+}
+
 static void
 print_table(void)
 {
@@ -396,12 +411,16 @@ print_table(void)
         if (!selected(e) || e->nsamples == 0)
             continue;
         char gname[128];
+        char val[32], p50[32], p95[32];
         go_name(e->name, gname, sizeof(gname));
-        printf("Benchmark%s-%ld\t%8d\t%10.0f %s", gname, ncpu, e->ops, e->p50,
+        fmt_value(val, sizeof(val), e->p50);
+        fmt_value(p50, sizeof(p50), e->p50);
+        fmt_value(p95, sizeof(p95), e->p95);
+        printf("Benchmark%s-%ld\t%8d\t%10s %s", gname, ncpu, e->ops, val,
                e->unit);
         if (e->nsamples > 1)
-            printf("\t(p50 %.0f  p95 %.0f  cv %.1f%%  n=%d)",
-                   e->p50, e->p95, e->cv_pct, e->nsamples);
+            printf("\t(p50 %s  p95 %s  cv %.1f%%  n=%d)",
+                   p50, p95, e->cv_pct, e->nsamples);
         if (e->nextra > 0)
         {
             printf("\t[");

@@ -288,15 +288,24 @@ endif
 bench-stack: $(BUILD_DIR)/bench_stack
 	./$(BUILD_DIR)/bench_stack
 
+$(BUILD_DIR)/bench_idle: tests/bench_idle.c $(UI_BENCH_SRC) $(UI_BENCH_HDR) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
+	$(CC) $(UI_CFLAGS) -I. -Itests -o $@ tests/bench_idle.c $(UI_BENCH_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o $(LDFLAGS) $(_LIB)
+ifneq ($(STRIP),no)
+	strip $@
+endif
+
+bench-idle: $(BUILD_DIR)/bench_idle
+	./$(BUILD_DIR)/bench_idle
+
 # Build the benchmark binaries without running them (CI-friendly).
-bench-build: $(BUILD_DIR)/bench_ui $(BUILD_DIR)/bench_ui_io $(BUILD_DIR)/bench_stack
+bench-build: $(BUILD_DIR)/bench_ui $(BUILD_DIR)/bench_ui_io $(BUILD_DIR)/bench_stack $(BUILD_DIR)/bench_idle
 
 # Collect a benchmark record as JSON.  Every metric keeps its samples,
 # so the record carries a median, a spread and a stability figure
 # instead of a single number.  Set BASE_DIR=<other build dir> to also
 # measure that build on this machine and attach it as the run's
 # baseline (same-machine A/B); build it first.
-bench-json: $(BUILD_DIR)/bench_ui $(BUILD_DIR)/bench_ui_io $(BUILD_DIR)/bench_stack
+bench-json: $(BUILD_DIR)/bench_ui $(BUILD_DIR)/bench_ui_io $(BUILD_DIR)/bench_stack $(BUILD_DIR)/bench_idle
 	node scripts/bench_collect.mjs --bin-dir $(BUILD_DIR) --iters 2 --count 6 \
 		--out bench-output.json \
 		$(if $(BASE_DIR),--base-bin-dir $(BASE_DIR),)
@@ -333,7 +342,7 @@ bench-ui-perf:
         test-polladd-degraded test-audit test-cycle-stress test-spawn-api \
         test-run-reentrant test-stack-policy test-stack-trim test-goro-vma \
         test-runtime-config \
-        bench-ui bench-ui-io bench-stack bench-json bench-stat bench-build \
+        bench-ui bench-ui-io bench-stack bench-idle bench-json bench-stat bench-build \
         web-install web-build web-test libui clean
 
 test: test-ui test-c8-race test-p0 test-udp-echo test-sched-iopark \

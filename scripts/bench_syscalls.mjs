@@ -27,6 +27,7 @@ const GROUPS = [
   ["bench_ui", "bench_ui"],
   ["bench_ui_io", "bench_ui_io"],
   ["bench_stack", "bench_stack"],
+  ["bench_idle", "bench_idle"],
 ];
 
 function parseArgs(argv) {
