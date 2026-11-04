@@ -135,6 +135,45 @@ void     ui_SleepUs(unsigned int us);
  * semantics as GoOn — takes effect from the next blocking point). */
 void     ui_PinTo(int vcpu);
 
+/* ── Goroutine-local storage (embedder context) ──
+ *
+ * Each goro carries one opaque `local` slot.  Embedders that keep
+ * per-execution-context state (e.g. a language runtime whose scratch
+ * memory or default allocator must follow the goroutine across
+ * work-stealing migrations between OS threads) register hooks instead
+ * of chasing switches themselves:
+ *
+ *   resume  — called on the vCPU thread right before a goro is switched
+ *             in (including its very first run).  local may be NULL (the
+ *             goro never touched local storage); the hook may then
+ *             create state lazily via ui_GoroLocalSlot().
+ *   park    — called right after a goro switches back to the scheduler
+ *             (yield / block / exit).  The parking goro's local is
+ *             passed; the hook typically saves whatever the embedder
+ *             caches in thread-local storage.
+ *   release — called exactly once when the goro's life ends (recycle
+ *             into the pool or free).  Pooled goros carry local == NULL,
+ *             so state does not outlive its owner.
+ *
+ * Every hook is optional (NULL = skip).  With no hooks registered the
+ * scheduler pays one NULL check per resume and nothing else.  Hooks
+ * must be installed before ui_Init()/ui_Run(); installing later is
+ * undefined for goros that already ran. */
+typedef struct {
+    void *(*create)(void);       /* reserved; unused for now */
+    void  (*release)(void *local);
+    void  (*park)(void *local);
+    void  (*resume)(void *local);
+} ui_GoroLocalHooks;
+
+void     ui_SetGoroLocalHooks(const ui_GoroLocalHooks *hooks);
+
+/* Address of the CURRENT goro's local slot (NULL when not running
+ * inside a goro, e.g. on a foreign thread or before ui_Run).  Writing
+ * through the pointer binds state to this goro's lifetime; it is
+ * cleared by the release hook path on recycle. */
+void   **ui_GoroLocalSlot(void);
+
 uint64_t ui_NewChan(size_t elem_size, unsigned int buf_cap);
 void     ui_ChanSend(uint64_t c, const void *val);
 void     ui_ChanRecv(uint64_t c, void *val);
