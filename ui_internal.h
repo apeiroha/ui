@@ -181,6 +181,11 @@ struct ui_Goro
     ui_Func0  entry;
     void     *arg;
 
+    /* Embedder's per-goro context (ui_GoroLocalHooks).  NULL for goros
+     * that never touched local storage; cleared when the goro's life
+     * ends (ui_goro_recycle) so pooled goros start fresh. */
+    void     *local;
+
     int       state;
     int       voluntary;   /* 1 = last yield was a voluntary ui_Yield */
     int       home_vcpu;

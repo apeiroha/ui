@@ -583,6 +583,34 @@ ui_steal_work(ui_vCPU *v)
     return 0;
 }
 
+/* ── Goroutine-local storage (embedder context) ──
+ *
+ * See ui.h for the contract.  Hooks fire at exactly two scheduler
+ * points: resume (before a goro is switched in, including its first
+ * run) and park (right after that goro switches back — every park
+ * site in the library targets the resuming vCPU's sched_rsp, so no
+ * per-park-site hooks are needed).  release fires once at recycle. */
+static ui_GoroLocalHooks g_ui_goro_local;
+
+void
+ui_SetGoroLocalHooks(const ui_GoroLocalHooks *hooks)
+{
+    if (hooks)
+        g_ui_goro_local = *hooks;
+    else
+        memset(&g_ui_goro_local, 0, sizeof(g_ui_goro_local));
+}
+
+void **
+ui_GoroLocalSlot(void)
+{
+    /* Called from embedder code running INSIDE a goro, so the vCPU's
+     * current pointer is exactly the caller's goro.  No extra TLS:
+     * ui_this_vcpu already tracks the vCPU thread. */
+    ui_vCPU *v = ui_this_vcpu;
+    return (v && v->current) ? &v->current->local : NULL;
+}
+
 static ui_vCPU *
 ui_get_vcpu(void)
 {
@@ -721,6 +749,16 @@ ui_goro_recycle(ui_Goro *cg)
 {
     ui_vCPU *v = ui_get_vcpu();
     unsigned long long used = ui_goro_stack_bytes(cg);
+
+    /* The goro's life ends here: hand the embedder its per-goro context
+     * back before the struct is reused (pool prepare memsets it) or
+     * freed, so no state outlives its owner. */
+    if (cg->local)
+    {
+        if (g_ui_goro_local.release)
+            g_ui_goro_local.release(cg->local);
+        cg->local = NULL;
+    }
 
     /* 1. Try per-vCPU pool (no lock) */
     if (v && v->goro_pool_count < UI_LOCAL_GORO_POOL_SIZE)
@@ -990,6 +1028,9 @@ ui_schedule(void)
 
         g->state = UI_RUNNING;
         g->voluntary = 0;
+        ui_Goro *parked = g;   /* this goro will park back right here */
+        if (g_ui_goro_local.resume)
+            g_ui_goro_local.resume(g->local);
         v->current = g;
         if (g->first_run)
         {
@@ -1019,6 +1060,13 @@ ui_schedule(void)
             }
             ui_switch(&v->sched_rsp, g->rsp);
         }
+        /* Control returns here exactly when `parked` switches back to
+         * this vCPU's scheduler context (yield / block / exit — all
+         * park sites target sched_rsp).  `parked` is a local of this
+         * frame and outlives the switch; the goro struct is recycled
+         * only later, at the no_goro path below. */
+        if (g_ui_goro_local.park)
+            g_ui_goro_local.park(parked->local);
     }
     else
     {

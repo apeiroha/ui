@@ -148,6 +148,14 @@ $(BUILD_DIR)/test_sched_iopark: $(TEST_IOPARK_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_D
 test-sched-iopark: $(BUILD_DIR)/test_sched_iopark
 	timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_sched_iopark
 
+TEST_GORO_LOCAL_SRC = tests/test_goro_local.c
+
+$(BUILD_DIR)/test_goro_local: $(TEST_GORO_LOCAL_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
+	$(CC) $(UI_CFLAGS) -I. -o $@ $^ $(LDFLAGS) $(_LIB)
+
+test-goro-local: $(BUILD_DIR)/test_goro_local
+	timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_goro_local
+
 TEST_SPAWN_STEAL_SRC = tests/test_spawn_steal.c
 
 $(BUILD_DIR)/test_spawn_steal: $(TEST_SPAWN_STEAL_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
@@ -329,7 +337,8 @@ bench-ui-perf:
 
 # ── Aggregate ──
 .PHONY: all test test-ui test-c8-race test-p0 test-p0-asan test-udp-echo \
-        test-sched-iopark test-spawn-steal test-lifo-slot test-stack-overflow \
+        test-sched-iopark test-spawn-steal test-goro-local test-lifo-slot \
+        test-stack-overflow \
         test-polladd-degraded test-audit test-cycle-stress test-spawn-api \
         test-run-reentrant test-stack-policy test-stack-trim test-goro-vma \
         test-runtime-config \
@@ -337,7 +346,8 @@ bench-ui-perf:
         web-install web-build web-test libui clean
 
 test: test-ui test-c8-race test-p0 test-udp-echo test-sched-iopark \
-       test-spawn-steal test-idle-wait test-stack-overflow test-polladd-degraded \
+       test-spawn-steal test-goro-local test-idle-wait test-stack-overflow \
+       test-polladd-degraded \
        test-audit test-cycle-stress test-spawn-api test-run-reentrant \
        test-stack-policy test-stack-trim test-goro-vma test-runtime-config
 
