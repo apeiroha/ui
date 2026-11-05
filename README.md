@@ -42,6 +42,7 @@ make test-stack-overflow # 8MB 栈溢出干净报错
 make bench-ui         # 协程调度基准
 make bench-ui-io      # I/O 基准
 make bench-stack      # 栈占用与回收策略基准
+make bench-idle       # 空闲路径基准（唤醒延迟 / 空载 CPU）
 make bench-json       # 采集为 JSON（scripts/bench_collect.mjs）
 make bench-stat       # 判定两份记录的差异是不是真的（scripts/benchstat.mjs）
 ```
@@ -50,6 +51,11 @@ make bench-stat       # 判定两份记录的差异是不是真的（scripts/ben
 的 op 数（这是指标定义的一部分，不是调参旋钮），预热轮次被丢弃，测量重复多
 次并保留每一个样本。报告给的是中位数加离散度，不是一个孤零零的 ns/op——
 共享 runner 上单个数字是噪声，样本才是测量。
+
+四个基准组各自回答一类问题：`bench_ui`（调度与同步）、`bench_ui_io`（io_uring
+地板 / park 路径 / POSIX 对照）、`bench_stack`（栈回收策略的延迟与常驻内存）、
+`bench_idle`（空闲路径：唤醒延迟与空载 CPU，也就是 `UI_IDLE_WAIT_MS` 的代价
+与收益）。
 
 前端面板（`web/`，Solid 2 + TypeScript）本地用 bun：
 

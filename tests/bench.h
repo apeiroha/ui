@@ -41,8 +41,10 @@
 #define UI_BENCH_MAX_SAMPLES 128
 #define UI_BENCH_MAX_EXTRA   8
 
-/* Run the body once, no repeats.  For benchmarks whose side effects
- * cannot be replayed (spawning a million goroutines). */
+/* Run the body exactly once: no warmup round, no repeats.  For a
+ * benchmark whose side effects cannot be replayed (spawning a million
+ * goroutines) or whose one round already is the measurement (an idle
+ * window where a warmup round is just wall clock). */
 #define UI_BENCH_ONCE  0x1
 
 /* Per-sample state handed to a benchmark body. */

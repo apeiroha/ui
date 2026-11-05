@@ -300,6 +300,11 @@ main(int argc, char **argv)
      * steady state long before. */
     ui_bench_add("bench_stack", "goroutine spawn+exit (deep stack, 64KB)",
                  bench_warm_deep, (void *)&cfg_free, 25000);
+    /* Both ends of the trade for a deep workload: keeping the pages (the
+     * default) is unbounded by design - the pool holds peak stack depth
+     * times pool size - while DONTNEED brings it back to a few MB. */
+    ui_bench_add("bench_stack", "stack pool RSS (deep stack, keep pages)",
+                 bench_rss_deep, (void *)&cfg_keep, 25000);
     ui_bench_add("bench_stack", "stack pool RSS (deep stack, DONTNEED)",
                  bench_rss_deep, (void *)&cfg_strict, 25000);
 
