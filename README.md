@@ -166,6 +166,12 @@ ssize_t n = ui_Read(fd, buf, sizeof buf);
 int     c = ui_Accept(listen_fd, &addr, &addrlen);
 ```
 
+零拷贝搬运 `ui_SpliceTo(dst, src, len, flags)`（io_uring `IORING_OP_SPLICE`，
+goro 内 park 等完成，非 goro 退化为同步 `splice(2)`）。注意性能结论：
+当前逐条 park 模型下，splice 中继全面慢于 `ui_Read+ui_Write`（64KB 约 0.51x，
+1MB 约 0.48x）——单次 park 往返 ~30-40µs 大于省下的 memcpy。socket/pipe
+中继类负载不要用本原语；保留在完整性与未来 LINK 批处理场景。
+
 spawn 失败语义：
 
 `ui_Go()` 及其变体在**无法创建 goro 时直接终止进程**（goro 槽位或地址空间耗尽）——
