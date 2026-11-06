@@ -216,7 +216,9 @@ ssize_t  ui_Write(int fd, const void *buf, size_t count);
 
 /* ui_SpliceTo — 内核 splice(2) 零拷贝搬运（io_uring SPLICE op）。
  * dst_fd/src_fd 至少一端是 pipe；off 全部沿用当前位置（io_uring 语义：
- * pipe 端必须 -1）。返回搬运字节数，失败 -errno。
+ * pipe 端必须 -1，regular file 端也以当前位置语义提交）。
+ * 返回搬运字节数；io_uring 路径失败返回 -errno（与 ui_Read 一致），
+ * 同步 fallback 解析失败时返回 -1 + errno（POSIX 约定，见 ui_io.c）。
  * 在 goro 内经 io_uring 提交并 park 等完成；非 goro/无环时退化为
  * 同步 splice(2) 系统调用。 */
 ssize_t  ui_SpliceTo(int dst_fd, int src_fd, size_t len, unsigned int flags);

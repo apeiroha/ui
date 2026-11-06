@@ -262,6 +262,21 @@ $(BUILD_DIR)/test_run_reentrant: $(TEST_RUN_REENTRANT_SRC) $(UI_SRC) $(UI_ASM) $
 test-run-reentrant: $(BUILD_DIR)/test_run_reentrant
 	timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_run_reentrant
 
+TEST_SPLICE_SRC = tests/test_splice.c
+
+$(BUILD_DIR)/test_splice: $(TEST_SPLICE_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
+	$(CC) $(UI_CFLAGS) -I. -o $@ $^ $(LDFLAGS) $(_LIB)
+
+$(BUILD_DIR)/test_splice_asan: $(TEST_SPLICE_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
+	$(CC) -O1 -g -fsanitize=address -fno-omit-frame-pointer -D_GNU_SOURCE \
+	  $(_CFLAGS_COMMON) -I. -o $@ $^ $(_PIE) $(_LIB) -fsanitize=address
+
+test-splice: $(BUILD_DIR)/test_splice
+	timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_splice
+
+test-splice-asan: $(BUILD_DIR)/test_splice_asan
+	ASAN_OPTIONS=abort_on_error=1:halt_on_error=1 timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_splice_asan
+
 # ── Benchmarks ──
 # The benchmark driver lives in tests/bench.{c,h}: a Go-style harness
 # that picks the iteration count, warms up, repeats the measurement and
@@ -350,7 +365,7 @@ bench-ui-perf:
         test-stack-overflow \
         test-polladd-degraded test-audit test-cycle-stress test-spawn-api \
         test-run-reentrant test-stack-policy test-stack-trim test-goro-vma \
-        test-runtime-config \
+        test-runtime-config test-splice test-splice-asan \
         bench-ui bench-ui-io bench-stack bench-idle bench-json bench-stat bench-build \
         web-install web-build web-test libui clean
 
@@ -358,7 +373,8 @@ test: test-ui test-c8-race test-p0 test-udp-echo test-sched-iopark \
        test-spawn-steal test-goro-local test-idle-wait test-stack-overflow \
        test-polladd-degraded \
        test-audit test-cycle-stress test-spawn-api test-run-reentrant \
-       test-stack-policy test-stack-trim test-goro-vma test-runtime-config
+       test-stack-policy test-stack-trim test-goro-vma test-runtime-config \
+       test-splice
 
 all: libui
 
