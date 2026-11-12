@@ -424,6 +424,12 @@ ui_uring_idle_wait(ui_vCPU *v, uint64_t wait_us)
         ui_uring_drain(v);
     }
 
+    /* The drain above may have queued runq work (same-vCPU CQE wakeups
+     * bypass eventfd entirely).  Never block with runnable goroutines:
+     * return and let the schedule loop run them. */
+    if (!ui_runq_empty(v))
+        return;
+
     struct timespec ts = {
         .tv_sec = (time_t)(wait_us / 1000000),
         .tv_nsec = (long)(wait_us % 1000000) * 1000,
