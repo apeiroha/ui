@@ -1,0 +1,41 @@
+name: setup-gcc-musl
+description: Expose the gcc-musl toolchain (gcc 14 backend + kernel UAPI headers)
+
+# Pairs with setup-gcc (which installs gcc 14): the musl wrapper execs
+# ${REALGCC:-gcc}, and the runner's default gcc (13) does not accept
+# -std=c23, so REALGCC is pinned to the same gcc-14 the glibc leg uses.
+
+runs:
+  using: composite
+  steps:
+    - name: Install musl wrapper and point it at gcc 14
+      shell: bash
+      run: |
+        sudo apt-get install -y musl-tools
+        # The Makefile's gcc-musl entry expects the cross toolchain
+        # name; Debian/Ubuntu install the wrapper as musl-gcc.
+        sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/x86_64-linux-musl-gcc
+        echo "REALGCC=x86_64-linux-gnu-gcc-14" >> "$GITHUB_ENV"
+
+    - name: Copy kernel UAPI headers into the musl include tree
+      shell: bash
+      run: |
+        # musl-gcc only searches the musl include tree, which on
+        # Debian/Ubuntu does not carry the kernel UAPI headers
+        # (linux/, asm/, asm-generic/ belong to linux-libc-dev) --
+        # <linux/io_uring.h> would not be found.  Copy them in, the
+        # same thing musl-cross-make does at build time.  UAPI headers
+        # are libc-neutral, so this cannot leak glibc declarations
+        # into the musl build.
+        sudo cp -r /usr/include/linux /usr/include/asm-generic \
+                   /usr/include/x86_64-linux-musl/
+        sudo cp -r /usr/include/x86_64-linux-gnu/asm \
+                   /usr/include/x86_64-linux-musl/asm
+
+    - name: Smoke test (c23 accepts, kernel UAPI visible)
+      shell: bash
+      run: |
+        echo 'int main(void){return 0;}' > /tmp/musl-probe.c
+        x86_64-linux-musl-gcc -std=c23 -include linux/io_uring.h \
+          -c -o /tmp/musl-probe.o /tmp/musl-probe.c
+        x86_64-linux-musl-gcc --version | head -1
