@@ -3,10 +3,11 @@
 # ============================================================
 #
 # Toolchain selection (TOOLCHAIN=):
-#   zig      — zig cc + musl
-#   gcc      — gcc + glibc
-#   gcc-musl — gcc + musl-cross
-#   clang    — clang + musl (default)
+#   zig          — zig cc + musl
+#   gcc          — gcc + glibc
+#   gcc-musl     — gcc + musl-cross
+#   clang        — clang + musl (default)
+#   clang-glibc  — clang + glibc
 #
 # Build mode (BUILD=):
 #   debug   — -O0, full debug info (default)
@@ -62,6 +63,15 @@ ifeq ($(TOOLCHAIN), clang)
   _TARGET  = -target x86_64-linux-musl
   _STATIC  = -static
   _PIE     =
+  _LIB     = -lpthread
+  _OPT_UI  = $(if $(filter release,$(BUILD)),-O3,-O0)
+endif
+
+ifeq ($(TOOLCHAIN), clang-glibc)
+  CC       = clang
+  _TARGET  =
+  _STATIC  = -static
+  _PIE     = -fno-pie -no-pie
   _LIB     = -lpthread
   _OPT_UI  = $(if $(filter release,$(BUILD)),-O3,-O0)
 endif

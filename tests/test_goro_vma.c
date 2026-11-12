@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static int passed, failed;
 
@@ -41,6 +42,64 @@ vma_count(void)
         n++;
     fclose(f);
     return n;
+}
+
+/* Snapshot of /proc/self/maps for set operations between two points. */
+#define MAPS_MAX 4096
+#define MAPS_LINE 160
+typedef char maps_snap[MAPS_MAX][MAPS_LINE];
+
+static int
+read_maps(maps_snap lines)
+{
+    FILE *f = fopen("/proc/self/maps", "r");
+    if (!f)
+        return -1;
+    char line[512];
+    int n = 0;
+    while (fgets(line, sizeof(line), f) && n < MAPS_MAX)
+    {
+        size_t len = strlen(line);
+        if (len >= MAPS_LINE)
+            len = MAPS_LINE - 1;    /* only needed as a set member */
+        memcpy(lines[n], line, len);
+        lines[n][len] = 0;
+        n++;
+    }
+    fclose(f);
+    return n;
+}
+
+/* Mapping size in bytes from a maps line ("lo-hi perms ..."). */
+static long
+map_size(const char *line)
+{
+    unsigned long lo = 0, hi = 0;
+    sscanf(line, "%lx-%lx", &lo, &hi);
+    return (long)(hi - lo);
+}
+
+/* How many mappings of exactly `size` bytes exist in `after` but not in
+ * `before`.  A fresh stack slot's PROT_NONE headroom has a size no
+ * allocator mapping would have, which makes this count immune to the
+ * C library's own small mmap groups (musl mallocng allocates the
+ * pool-overflow control blocks in 16-32KB groups). */
+static long
+fresh_vmas_of_size(const maps_snap before, int n_before,
+                   const maps_snap after, int n_after, long size)
+{
+    long found = 0;
+    for (int i = 0; i < n_after; i++)
+    {
+        if (map_size(after[i]) != size)
+            continue;
+        int in_before = 0;
+        for (int j = 0; j < n_before; j++)
+            if (strcmp(after[i], before[j]) == 0) { in_before = 1; break; }
+        if (!in_before)
+            found++;
+    }
+    return found;
 }
 
 static int spawn_done;
@@ -76,6 +135,8 @@ main(void)
         return 1;
     }
     long after_init = vma_count();
+    maps_snap before_maps;
+    int n_before = read_maps(before_maps);
 
     /* The pre-allocated goroutines already have their stacks, so they
      * cost their VMAs before this point. */
@@ -89,12 +150,40 @@ main(void)
     /* The stacks are committed at creation, so the VMA count is already
      * final before the goroutines run. */
     long after_spawn = vma_count();
+    maps_snap after_maps;
+    int n_after = read_maps(after_maps);
 
     long delta = after_spawn - after_init;
     long per_goro = delta / fresh;
 
-    check(delta == fresh * 2,
-          "each new goroutine costs exactly two VMAs");
+    /* The stack arena design gives each fresh slot exactly one
+     * PROT_NONE headroom mapping of (reserve + guard page - committed)
+     * plus its committed UI_STACK_INIT pages.  Count the headroom
+     * mappings by exact size: the C allocator may add small mmap
+     * groups of its own (musl mallocng groups the pool-overflow
+     * control blocks in 16-32KB pieces), and those are not stack cost
+     * -- they must not invalidate the ceiling constant, which prices a
+     * goroutine at two VMAs. */
+    long headroom = UI_STACK_RESERVE
+                  + (long)sysconf(_SC_PAGESIZE) - UI_STACK_INIT;
+    long headroom_fresh = (n_before >= 0 && n_after >= 0)
+        ? fresh_vmas_of_size(before_maps, n_before, after_maps, n_after,
+                             headroom)
+        : -1;
+
+    long noise = delta - fresh * 2;
+
+    if (headroom_fresh != fresh)
+        printf("  (diagnostic: fresh headroom VMAs=%ld, expected %ld "
+               "(size %ld))\n", headroom_fresh, fresh, headroom);
+    if (noise != 0)
+        printf("  (diagnostic: delta=%ld, fresh=%ld, allocator noise=%ld)\n",
+               delta, fresh, noise);
+
+    check(headroom_fresh == fresh,
+          "each new goroutine maps exactly one stack headroom VMA");
+    check(noise >= 0 && noise <= fresh / 16,
+          "total VMA cost stays at two per goroutine (+ allocator noise)");
     check(per_goro == 2, "the VMA cost per goroutine is 2");
 
     /* The ceiling the runtime reports at startup is derived from the

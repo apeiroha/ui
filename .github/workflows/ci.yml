@@ -17,28 +17,51 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # clang 19 matches the development toolchain.  gcc 14 is
-          # installed by ./.github/actions/setup-gcc because it is the
-          # first release that spells the standard `c23`; the runner's
-          # default gcc 13 only accepts the older `c2x` alias.
+          # Full compiler x libc matrix: clang 19 and gcc 14 each build
+          # against musl AND glibc, so a failure points at the libc
+          # boundary instead of the compiler.  clang 19 matches the
+          # development toolchain.  gcc 14 is installed by
+          # ./.github/actions/setup-gcc because it is the first release
+          # that spells the standard `c23`; the runner's default gcc 13
+          # only accepts the older `c2x` alias.
           #
           # `uses` cannot take an expression -- matrix is not an allowed
-          # context there (it is allowed in if/with/run/name), so the two
-          # setup actions are both listed and gated on toolchain instead.
+          # context there (it is allowed in if/with/run/name), so the
+          # setup actions are all listed and gated on `setup` instead.
+          # The gcc-musl leg additionally needs setup-gcc (gcc 14
+          # backend for the musl wrapper) and setup-gcc-musl (wrapper
+          # name + kernel UAPI headers).
           - toolchain: clang
+            libc: musl
             std: c23
             cc: clang-19
+            setup: clang
+          - toolchain: clang-glibc
+            libc: glibc
+            std: c23
+            cc: clang-19
+            setup: clang
           - toolchain: gcc
+            libc: glibc
             std: c23
             cc: x86_64-linux-gnu-gcc-14
+            setup: gcc
+          - toolchain: gcc-musl
+            libc: musl
+            std: c23
+            cc: x86_64-linux-musl-gcc
+            setup: gcc-musl
     steps:
       - uses: actions/checkout@v4
 
       - uses: ./.github/actions/setup-clang
-        if: matrix.toolchain == 'clang'
+        if: matrix.setup == 'clang'
 
       - uses: ./.github/actions/setup-gcc
-        if: matrix.toolchain == 'gcc'
+        if: matrix.setup == 'gcc' || matrix.setup == 'gcc-musl'
+
+      - uses: ./.github/actions/setup-gcc-musl
+        if: matrix.setup == 'gcc-musl'
 
       - name: Build library
         run: make libui TOOLCHAIN=${{ matrix.toolchain }} STD=${{ matrix.std }} CC=${{ matrix.cc }}
