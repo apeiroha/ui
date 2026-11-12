@@ -739,6 +739,28 @@ ui_Write(int fd, const void *buf, size_t count)
 }
 
 ssize_t
+ui_SpliceTo(int dst_fd, int src_fd, size_t len, unsigned int flags)
+{
+    ui_vCPU *v = ui_this_vcpu;
+    if (!v || !v->current) return splice(src_fd, NULL, dst_fd, NULL, len, flags);
+    if (ui_vcpu_ensure_ring(v) < 0) return splice(src_fd, NULL, dst_fd, NULL, len, flags);
+
+    struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
+    if (!sqe) return splice(src_fd, NULL, dst_fd, NULL, len, flags);
+
+    /* IORING_OP_SPLICE 槽位：fd=dst、off=off_out、splice_off_in=off_in、
+     * rw_flags=flags、splice_fd_in=src（内核 6.x 布局，均已验证）。 */
+    sqe->opcode = IORING_OP_SPLICE;
+    sqe->fd = dst_fd;
+    sqe->off = -1;                        /* off_out：当前位置 */
+    sqe->splice_off_in = -1;              /* off_in：当前位置 */
+    sqe->len = len;
+    sqe->rw_flags = flags;
+    sqe->splice_fd_in = src_fd;
+    return ui_io_submit_and_wait(v, sqe);
+}
+
+ssize_t
 ui_TryRead(int fd, void *buf, size_t count)
 {
     ssize_t n = read(fd, buf, count);

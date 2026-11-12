@@ -213,6 +213,13 @@ void     ui_RwLockFree(uint64_t rw);
 
 ssize_t  ui_Read(int fd, void *buf, size_t count);
 ssize_t  ui_Write(int fd, const void *buf, size_t count);
+
+/* ui_SpliceTo — 内核 splice(2) 零拷贝搬运（io_uring SPLICE op）。
+ * dst_fd/src_fd 至少一端是 pipe；off 全部沿用当前位置（io_uring 语义：
+ * pipe 端必须 -1）。返回搬运字节数，失败 -errno。
+ * 在 goro 内经 io_uring 提交并 park 等完成；非 goro/无环时退化为
+ * 同步 splice(2) 系统调用。 */
+ssize_t  ui_SpliceTo(int dst_fd, int src_fd, size_t len, unsigned int flags);
 ssize_t  ui_TryRead(int fd, void *buf, size_t count);
 ssize_t  ui_TryWrite(int fd, const void *buf, size_t count);
 int      ui_Open(const char *pathname, int flags, ...);
