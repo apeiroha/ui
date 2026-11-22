@@ -130,7 +130,7 @@ ui_stack_init_arena(ui_Goro *g, size_t reserve, size_t commit, int page_size)
 }
 
 int
-ui_stack_init(ui_Goro *g, int stack_size)
+ui_stack_init(ui_Goro *g, int64_t stack_size)
 {
     long page_size;
     size_t reserve, commit;

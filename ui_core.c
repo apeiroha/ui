@@ -1198,9 +1198,8 @@ ui_teardown_signal_handler(void)
  * applied by ui_Init(), an explicit call wins) or at any time after it
  * (the change takes effect on the next recycle). */
 
-int
-ui_SetStackTrimPolicy(ui_StackTrimPolicy policy)
-{
+int64_t
+ui_SetStackTrimPolicy(ui_StackTrimPolicy policy) {
     if (policy < UI_STACK_TRIM_NONE || policy > UI_STACK_TRIM_DONTNEED)
     {
         errno = EINVAL;
@@ -1211,15 +1210,14 @@ ui_SetStackTrimPolicy(ui_StackTrimPolicy policy)
     return 0;
 }
 
-int
+int64_t
 ui_GetStackTrimPolicy(void)
 {
     return ui_stack_trim_policy;
 }
 
-int
-ui_SetStackMemoryLimit(size_t bytes)
-{
+int64_t
+ui_SetStackMemoryLimit(size_t bytes) {
     ui_stack_memory_limit_api = (unsigned long long)bytes;
     ui_stack_memory_limit_api_set = 1;
     ui_stack_memory_limit = (unsigned long long)bytes;
@@ -1238,9 +1236,8 @@ ui_StackMemoryLimit(void)
 
 /* ── Runtime tuning (public API) ── */
 
-int
-ui_SetNVCPUs(int n)
-{
+int64_t
+ui_SetNVCPUs(int64_t n) {
     if (n < 1 || n > UI_MAX_VCPUS)
     {
         errno = EINVAL;
@@ -1253,13 +1250,12 @@ ui_SetNVCPUs(int n)
         errno = EBUSY;
         return -1;
     }
-    ui_nvcpus_api = n;
+    ui_nvcpus_api = (int)n;
     return 0;
 }
 
-int
-ui_SetYieldIOMask(uint32_t n)
-{
+int64_t
+ui_SetYieldIOMask(uint32_t n) {
     ui_yield_io_mask_api = n;
     ui_yield_io_mask_api_set = 1;
     ui_yield_io_mask = n;
@@ -1272,9 +1268,8 @@ ui_GetYieldIOMask(void)
     return ui_yield_io_mask;
 }
 
-int
-ui_SetIdleWaitMs(uint32_t ms)
-{
+int64_t
+ui_SetIdleWaitMs(uint32_t ms) {
     if (ms < 1)
     {
         errno = EINVAL;
@@ -1323,7 +1318,7 @@ ui_check_map_count_limit(void)
             limit, goroutines);
 }
 
-int
+int64_t
 ui_Init(void)
 {
     if (g_ui_sched.initialized) return 0;
@@ -1531,7 +1526,7 @@ ui_goro_init(ui_Goro *g)
 }
 
 static ui_Goro *
-ui_goro_alloc(ui_Func0 entry, void *arg, int stack_size)
+ui_goro_alloc(ui_Func0 entry, void *arg, int64_t stack_size)
 {
     ui_vCPU *v = ui_get_vcpu();
     ui_Goro *g = NULL;
@@ -1626,12 +1621,12 @@ ui_goro_exit(void)
  * goro when the target goes idle, rewriting home_vcpu accordingly).
  * Out-of-range targets (including before ui_Init) clamp to vCPU 0. */
 static void
-ui_spawn_enqueue_at(ui_Goro *g, int target)
+ui_spawn_enqueue_at(ui_Goro *g, int64_t target)
 {
     if (target < 0 || target >= g_ui_sched.nvcpus)
         target = 0;
 
-    g->home_vcpu = target;
+    g->home_vcpu = (int)target;
     atomic_fetch_add(&g_ui_sched.active_count, 1);
     ui_dbg_deliver(g, target, 0);
     ui_runq_insert(&g_ui_sched.vcpus[target], g);
@@ -1684,7 +1679,7 @@ ui_spawn_enqueue(ui_Goro *g)
      * of the FIFO tail (newproc -> runqput(next=true) in Go). */
     if (cur && cur->current && target == cur->id && !g->pinned)
     {
-        g->home_vcpu = target;
+        g->home_vcpu = (int)target;
         atomic_fetch_add(&g_ui_sched.active_count, 1);
         ui_dbg_deliver(g, cur->id, 8);
         ui_runnext_put(cur, g);
@@ -1729,16 +1724,15 @@ ui_spawn_fatal(const char *what)
 uint64_t ui_Go(ui_Func0 f) { return ui_GoSized(f, 0); }
 
 uint64_t
-ui_GoSized(ui_Func0 f, int stack_size)
-{
+ui_GoSized(ui_Func0 f, int64_t stack_size) {
     ui_Goro *g = ui_goro_alloc(f, NULL, stack_size);
     if (!g) ui_spawn_fatal("ui_Go");
     ui_spawn_enqueue(g);
     return (uint64_t)(uintptr_t)g;
 }
 
-int
-ui_TryGoSized(ui_Func0 f, int stack_size, uint64_t *id_out)
+int64_t
+ui_TryGoSized(ui_Func0 f, int64_t stack_size, uint64_t *id_out)
 {
     ui_Goro *g = ui_goro_alloc(f, NULL, stack_size);
     if (!g) return -1;
@@ -1747,7 +1741,7 @@ ui_TryGoSized(ui_Func0 f, int stack_size, uint64_t *id_out)
     return 0;
 }
 
-int
+int64_t
 ui_TryGo(ui_Func0 f, uint64_t *id_out)
 {
     return ui_TryGoSized(f, 0, id_out);
@@ -1766,8 +1760,7 @@ go1_trampoline(void *data)
 }
 
 uint64_t
-ui_Go1Sized(void *fn, uintptr_t arg, int stack_size)
-{
+ui_Go1Sized(void *fn, uintptr_t arg, int64_t stack_size) {
     struct go1_pkg *p = malloc(sizeof(*p));
     if (!p) { errno = ENOMEM; ui_spawn_fatal("ui_Go1"); }
     p->fn = fn; p->arg = arg;
@@ -1777,7 +1770,7 @@ ui_Go1Sized(void *fn, uintptr_t arg, int stack_size)
     return (uint64_t)(uintptr_t)g;
 }
 
-int
+int64_t
 ui_TryGo1(void *fn, uintptr_t arg, uint64_t *id_out)
 {
     struct go1_pkg *p = malloc(sizeof(*p));
@@ -1796,11 +1789,10 @@ ui_TryGo1(void *fn, uintptr_t arg, uint64_t *id_out)
  * still migrate it, see ui_spawn_enqueue_at).  Out-of-range vcpu clamps
  * to 0. */
 
-uint64_t ui_GoOn(ui_Func0 f, int vcpu) { return ui_GoOnSized(f, 0, vcpu); }
+uint64_t ui_GoOn(ui_Func0 f, int64_t vcpu) { return ui_GoOnSized(f, 0, vcpu); }
 
 uint64_t
-ui_GoOnSized(ui_Func0 f, int stack_size, int vcpu)
-{
+ui_GoOnSized(ui_Func0 f, int64_t stack_size, int64_t vcpu) {
     ui_Goro *g = ui_goro_alloc(f, NULL, stack_size);
     if (!g) ui_spawn_fatal("ui_GoOn");
     g->pinned = 1;   /* honor first-run placement: not stealable yet */
@@ -1809,11 +1801,10 @@ ui_GoOnSized(ui_Func0 f, int stack_size, int vcpu)
     return (uint64_t)(uintptr_t)g;
 }
 
-uint64_t ui_Go1On(void *fn, uintptr_t arg, int vcpu) { return ui_Go1OnSized(fn, arg, 0, vcpu); }
+uint64_t ui_Go1On(void *fn, uintptr_t arg, int64_t vcpu) { return ui_Go1OnSized(fn, arg, 0, vcpu); }
 
 uint64_t
-ui_Go1OnSized(void *fn, uintptr_t arg, int stack_size, int vcpu)
-{
+ui_Go1OnSized(void *fn, uintptr_t arg, int64_t stack_size, int64_t vcpu) {
     struct go1_pkg *p = malloc(sizeof(*p));
     if (!p) { errno = ENOMEM; ui_spawn_fatal("ui_Go1On"); }
     p->fn = fn; p->arg = arg;
@@ -1825,7 +1816,7 @@ ui_Go1OnSized(void *fn, uintptr_t arg, int stack_size, int vcpu)
     return (uint64_t)(uintptr_t)g;
 }
 
-int
+int64_t
 ui_NVCPUs(void)
 {
     return g_ui_sched.nvcpus;
@@ -1862,12 +1853,12 @@ ui_Yield(void)
  * the goro as it does for any other pair.
  */
 void
-ui_PinTo(int vcpu)
+ui_PinTo(int64_t vcpu)
 {
     ui_vCPU *v = ui_get_vcpu();
     if (!v || !v->current) return;
     if (vcpu < 0 || vcpu >= g_ui_sched.nvcpus) vcpu = 0;
-    v->current->home_vcpu = vcpu;
+    v->current->home_vcpu = (int)vcpu;
     /* Stop channel direct handoff from pulling the goro back onto the
      * waker's core; released once it resumes on `vcpu` (ui_schedule). */
     v->current->bound = 1;

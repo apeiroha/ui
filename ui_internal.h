@@ -362,7 +362,7 @@ void          ui_wakeup_handoff(ui_Goro *g);
 void          ui_wake_vcpu(ui_vCPU *v);
 void          ui_goro_exit(void);
 
-int           ui_stack_init(ui_Goro *g, int stack_size);
+int           ui_stack_init(ui_Goro *g, int64_t stack_size);
 void          ui_stack_destroy(ui_Goro *g);
 void          ui_stack_trim(ui_Goro *g);          /* policy-driven (see ui_StackTrimPolicy) */
 void          ui_stack_hard_trim(ui_Goro *g);     /* MADV_DONTNEED, ignores the policy */
