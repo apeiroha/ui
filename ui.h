@@ -10,7 +10,7 @@
 typedef void (*ui_Func0)(void);
 typedef void (*ui_Func1)(uintptr_t);
 
-int      ui_Init(void);
+int64_t  ui_Init(void);
 void     ui_Run(void);
 void     ui_Fini(void);
 
@@ -62,9 +62,9 @@ typedef enum {
 /* The iroha binding names these ui.StackTrimNone / ui.StackTrimFree /
  * ui.StackTrimDontNeed; see ui.iroha and the README. */
 
-int         ui_SetStackTrimPolicy(ui_StackTrimPolicy policy);
-int         ui_GetStackTrimPolicy(void);
-int         ui_SetStackMemoryLimit(size_t bytes);
+int64_t         ui_SetStackTrimPolicy(ui_StackTrimPolicy policy);
+int64_t     ui_GetStackTrimPolicy(void);
+int64_t         ui_SetStackMemoryLimit(size_t bytes);
 size_t      ui_StackMemoryLimit(void);
 
 /* ── Runtime tuning ──
@@ -94,17 +94,17 @@ size_t      ui_StackMemoryLimit(void);
  *                 but it is also what decides the idle CPU cost, since
  *                 a vCPU that finds nothing to do waits this long.
  */
-int         ui_SetNVCPUs(int n);
+int64_t         ui_SetNVCPUs(int64_t n);
 
-int         ui_SetYieldIOMask(uint32_t n);
+int64_t         ui_SetYieldIOMask(uint32_t n);
 uint32_t    ui_GetYieldIOMask(void);
-int         ui_SetIdleWaitMs(uint32_t ms);
+int64_t         ui_SetIdleWaitMs(uint32_t ms);
 uint32_t    ui_GetIdleWaitMs(void);
 
 uint64_t ui_Go(ui_Func0 f);
-uint64_t ui_GoSized(ui_Func0 f, int stack_size);
+uint64_t ui_GoSized(ui_Func0 f, int64_t stack_size);
 uint64_t ui_Go1(void *fn, uintptr_t arg);
-uint64_t ui_Go1Sized(void *fn, uintptr_t arg, int stack_size);
+uint64_t ui_Go1Sized(void *fn, uintptr_t arg, int64_t stack_size);
 
 /* Spawn variants that report failure instead of aborting the process.
  * ui_Go() and friends abort when a goroutine cannot be created (out of
@@ -113,19 +113,19 @@ uint64_t ui_Go1Sized(void *fn, uintptr_t arg, int stack_size);
  * can shed load: return 0 on success (the goroutine id is stored in
  * *id_out when id_out is non-NULL), -1 on failure with errno set
  * (ENOMEM for an exhausted runtime). */
-int ui_TryGo(ui_Func0 f, uint64_t *id_out);
-int ui_TryGoSized(ui_Func0 f, int stack_size, uint64_t *id_out);
-int ui_TryGo1(void *fn, uintptr_t arg, uint64_t *id_out);
+int64_t ui_TryGo(ui_Func0 f, uint64_t *id_out);
+int64_t ui_TryGoSized(ui_Func0 f, int64_t stack_size, uint64_t *id_out);
+int64_t ui_TryGo1(void *fn, uintptr_t arg, uint64_t *id_out);
 
 /* Targeted spawn: place the goro on an explicit home vCPU (soft binding —
  * the goro resumes there after blocking ops; stealing may still migrate
  * it).  Out-of-range vcpu clamps to 0. */
-uint64_t ui_GoOn(ui_Func0 f, int vcpu);
-uint64_t ui_GoOnSized(ui_Func0 f, int stack_size, int vcpu);
-uint64_t ui_Go1On(void *fn, uintptr_t arg, int vcpu);
-uint64_t ui_Go1OnSized(void *fn, uintptr_t arg, int stack_size, int vcpu);
+uint64_t ui_GoOn(ui_Func0 f, int64_t vcpu);
+uint64_t ui_GoOnSized(ui_Func0 f, int64_t stack_size, int64_t vcpu);
+uint64_t ui_Go1On(void *fn, uintptr_t arg, int64_t vcpu);
+uint64_t ui_Go1OnSized(void *fn, uintptr_t arg, int64_t stack_size, int64_t vcpu);
 
-int      ui_NVCPUs(void);
+int64_t  ui_NVCPUs(void);
 
 void     ui_Yield(void);
 void     ui_Sleep(unsigned int ms);
@@ -133,7 +133,7 @@ void     ui_SleepUs(unsigned int us);
 
 /* Rebind the current goro to an explicit home vCPU (soft binding, same
  * semantics as GoOn — takes effect from the next blocking point). */
-void     ui_PinTo(int vcpu);
+void     ui_PinTo(int64_t vcpu);
 
 /* ── Goroutine-local storage (embedder context) ──
  *
@@ -187,9 +187,7 @@ uint64_t ui_NewTimerUs(unsigned int us);
 void     ui_TimerStop(uint64_t ch);
 uint64_t ui_TimerReset(uint64_t old_ch, unsigned int new_us);
 
-int      ui_SelectWait(const uint64_t *recv_chs, void **recv_bufs,
-                       const uint64_t *send_chs, const void **send_vals,
-                       int nrecv, int nsend, int timeout_ms);
+int64_t      ui_SelectWait(const uint64_t *recv_chs, void **recv_bufs, const uint64_t *send_chs, const void **send_vals, int64_t nrecv, int64_t nsend, int64_t timeout_ms);
 
 uint64_t ui_MutexNew(void);
 void     ui_MutexLock(uint64_t m);
@@ -211,8 +209,8 @@ void     ui_RwLockWLock(uint64_t rw);
 void     ui_RwLockWUnlock(uint64_t rw);
 void     ui_RwLockFree(uint64_t rw);
 
-ssize_t  ui_Read(int fd, void *buf, size_t count);
-ssize_t  ui_Write(int fd, const void *buf, size_t count);
+ssize_t  ui_Read(int64_t fd, void *buf, size_t count);
+ssize_t  ui_Write(int64_t fd, const void *buf, size_t count);
 
 /* ui_SpliceTo — 内核 splice(2) 零拷贝搬运（io_uring SPLICE op）。
  * dst_fd/src_fd 至少一端是 pipe；off 全部沿用当前位置（io_uring 语义：
@@ -221,20 +219,20 @@ ssize_t  ui_Write(int fd, const void *buf, size_t count);
  * 同步 fallback 解析失败时返回 -1 + errno（POSIX 约定，见 ui_io.c）。
  * 在 goro 内经 io_uring 提交并 park 等完成；非 goro/无环时退化为
  * 同步 splice(2) 系统调用。 */
-ssize_t  ui_SpliceTo(int dst_fd, int src_fd, size_t len, unsigned int flags);
-ssize_t  ui_TryRead(int fd, void *buf, size_t count);
-ssize_t  ui_TryWrite(int fd, const void *buf, size_t count);
-int      ui_Open(const char *pathname, int flags, ...);
+ssize_t  ui_SpliceTo(int64_t dst_fd, int64_t src_fd, size_t len, unsigned int flags);
+ssize_t  ui_TryRead(int64_t fd, void *buf, size_t count);
+ssize_t  ui_TryWrite(int64_t fd, const void *buf, size_t count);
+int64_t  ui_Open(const char *pathname, int64_t flags, ...);
 
-ssize_t  ui_Recv(int fd, void *buf, size_t count, int flags);
-ssize_t  ui_Send(int fd, const void *buf, size_t count, int flags);
-ssize_t  ui_SendMsg(int fd, const struct msghdr *msg, int flags);
-ssize_t  ui_RecvMsg(int fd, struct msghdr *msg, int flags);
-int      ui_PollAdd(int fd, unsigned events);
-int      ui_Connect(int fd, const struct sockaddr *addr, socklen_t addrlen);
-int      ui_Accept(int fd, struct sockaddr *addr, socklen_t *addrlen);
-int      ui_Close(int fd);
-int      ui_Shutdown(int fd, int how);
+ssize_t  ui_Recv(int64_t fd, void *buf, size_t count, int64_t flags);
+ssize_t  ui_Send(int64_t fd, const void *buf, size_t count, int64_t flags);
+ssize_t  ui_SendMsg(int64_t fd, const struct msghdr *msg, int64_t flags);
+ssize_t  ui_RecvMsg(int64_t fd, struct msghdr *msg, int64_t flags);
+int64_t      ui_PollAdd(int64_t fd, unsigned events);
+int64_t      ui_Connect(int64_t fd, const struct sockaddr *addr, socklen_t addrlen);
+int64_t      ui_Accept(int64_t fd, struct sockaddr *addr, socklen_t *addrlen);
+int64_t      ui_Close(int64_t fd);
+int64_t      ui_Shutdown(int64_t fd, int64_t how);
 
 /* ── Multishot recvmsg + buffer ring ── */
 
@@ -242,12 +240,12 @@ typedef void (*ui_RecvMultiCb)(void *ctx, struct sockaddr *from,
                                socklen_t from_len,
                                const void *data, size_t len);
 
-struct ui_RecvMulti *ui_RecvMulti(int fd, ui_RecvMultiCb cb, void *ctx);
+struct ui_RecvMulti *ui_RecvMulti(int64_t fd, ui_RecvMultiCb cb, void *ctx);
 void                 ui_RecvMultiClose(struct ui_RecvMulti *rm);
 
 /* ── Batch send/recv (UDP mmsg) ── */
-int ui_SendMMsg(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags);
-int ui_RecvMMsg(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags);
-int ui_RecvBatch(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags);
+int64_t ui_SendMMsg(int64_t fd, struct mmsghdr *msgvec, unsigned vlen, int64_t flags);
+int64_t ui_RecvMMsg(int64_t fd, struct mmsghdr *msgvec, unsigned vlen, int64_t flags);
+int64_t ui_RecvBatch(int64_t fd, struct mmsghdr *msgvec, unsigned vlen, int64_t flags);
 
 #endif

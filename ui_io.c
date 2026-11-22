@@ -709,8 +709,7 @@ ui_io_submit_and_wait(ui_vCPU *v, struct io_uring_sqe *sqe)
 /* ── I/O operations — io_uring path with POSIX fallback ── */
 
 ssize_t
-ui_Read(int fd, void *buf, size_t count)
-{
+ui_Read(int64_t fd, void *buf, size_t count) {
     ui_vCPU *v = ui_this_vcpu;
     if (!v || !v->current) return read(fd, buf, count);
     if (ui_vcpu_ensure_ring(v) < 0) return read(fd, buf, count);
@@ -727,8 +726,7 @@ ui_Read(int fd, void *buf, size_t count)
 }
 
 ssize_t
-ui_Write(int fd, const void *buf, size_t count)
-{
+ui_Write(int64_t fd, const void *buf, size_t count) {
     ui_vCPU *v = ui_this_vcpu;
     if (!v || !v->current) return write(fd, buf, count);
     if (ui_vcpu_ensure_ring(v) < 0) return write(fd, buf, count);
@@ -745,8 +743,7 @@ ui_Write(int fd, const void *buf, size_t count)
 }
 
 ssize_t
-ui_SpliceTo(int dst_fd, int src_fd, size_t len, unsigned int flags)
-{
+ui_SpliceTo(int64_t dst_fd, int64_t src_fd, size_t len, unsigned int flags) {
     ui_vCPU *v = ui_this_vcpu;
     if (!v || !v->current) return splice(src_fd, NULL, dst_fd, NULL, len, flags);
     if (ui_vcpu_ensure_ring(v) < 0) return splice(src_fd, NULL, dst_fd, NULL, len, flags);
@@ -767,8 +764,7 @@ ui_SpliceTo(int dst_fd, int src_fd, size_t len, unsigned int flags)
 }
 
 ssize_t
-ui_TryRead(int fd, void *buf, size_t count)
-{
+ui_TryRead(int64_t fd, void *buf, size_t count) {
     ssize_t n = read(fd, buf, count);
     if (n >= 0) return n;
     if (errno == EAGAIN || errno == EWOULDBLOCK)
@@ -777,8 +773,7 @@ ui_TryRead(int fd, void *buf, size_t count)
 }
 
 ssize_t
-ui_TryWrite(int fd, const void *buf, size_t count)
-{
+ui_TryWrite(int64_t fd, const void *buf, size_t count) {
     ssize_t n = write(fd, buf, count);
     if (n >= 0) return n;
     if (errno == EAGAIN || errno == EWOULDBLOCK)
@@ -786,8 +781,8 @@ ui_TryWrite(int fd, const void *buf, size_t count)
     return -1;
 }
 
-int
-ui_Open(const char *pathname, int flags, ...)
+int64_t
+ui_Open(const char *pathname, int64_t flags, ...)
 {
     va_list ap;
     mode_t mode = 0;
@@ -796,8 +791,7 @@ ui_Open(const char *pathname, int flags, ...)
 }
 
 ssize_t
-ui_Recv(int fd, void *buf, size_t count, int flags)
-{
+ui_Recv(int64_t fd, void *buf, size_t count, int64_t flags) {
     ui_vCPU *v = ui_this_vcpu;
     if (!v || !v->current) return recv(fd, buf, count, flags);
     if (ui_vcpu_ensure_ring(v) < 0) return recv(fd, buf, count, flags);
@@ -814,8 +808,7 @@ ui_Recv(int fd, void *buf, size_t count, int flags)
 }
 
 ssize_t
-ui_Send(int fd, const void *buf, size_t count, int flags)
-{
+ui_Send(int64_t fd, const void *buf, size_t count, int64_t flags) {
     ui_vCPU *v = ui_this_vcpu;
     if (!v || !v->current) return send(fd, buf, count, flags);
     if (ui_vcpu_ensure_ring(v) < 0) return send(fd, buf, count, flags);
@@ -831,9 +824,8 @@ ui_Send(int fd, const void *buf, size_t count, int flags)
     return ui_io_submit_and_wait(v, sqe);
 }
 
-int
-ui_Connect(int fd, const struct sockaddr *addr, socklen_t addrlen)
-{
+int64_t
+ui_Connect(int64_t fd, const struct sockaddr *addr, socklen_t addrlen) {
     ui_vCPU *v = ui_this_vcpu;
     if (!v || !v->current) return connect(fd, addr, addrlen);
     if (ui_vcpu_ensure_ring(v) < 0) return connect(fd, addr, addrlen);
@@ -848,9 +840,8 @@ ui_Connect(int fd, const struct sockaddr *addr, socklen_t addrlen)
     return (int)ui_io_submit_and_wait(v, sqe);
 }
 
-int
-ui_Accept(int fd, struct sockaddr *addr, socklen_t *addrlen)
-{
+int64_t
+ui_Accept(int64_t fd, struct sockaddr *addr, socklen_t *addrlen) {
     ui_vCPU *v = ui_this_vcpu;
     if (!v || !v->current) return accept(fd, addr, addrlen);
     if (ui_vcpu_ensure_ring(v) < 0) return accept(fd, addr, addrlen);
@@ -865,9 +856,8 @@ ui_Accept(int fd, struct sockaddr *addr, socklen_t *addrlen)
     return (int)ui_io_submit_and_wait(v, sqe);
 }
 
-int
-ui_Close(int fd)
-{
+int64_t
+ui_Close(int64_t fd) {
     ui_vCPU *v = ui_this_vcpu;
     if (!v || !v->current) return close(fd);
     if (ui_vcpu_ensure_ring(v) < 0) return close(fd);
@@ -881,9 +871,8 @@ ui_Close(int fd)
     return (ret < 0) ? (int)ret : 0;
 }
 
-int
-ui_Shutdown(int fd, int how)
-{
+int64_t
+ui_Shutdown(int64_t fd, int64_t how) {
     ui_vCPU *v = ui_this_vcpu;
     if (!v || !v->current) return shutdown(fd, how);
     if (ui_vcpu_ensure_ring(v) < 0) return shutdown(fd, how);
@@ -898,8 +887,7 @@ ui_Shutdown(int fd, int how)
 }
 
 ssize_t
-ui_SendMsg(int fd, const struct msghdr *msg, int flags)
-{
+ui_SendMsg(int64_t fd, const struct msghdr *msg, int64_t flags) {
     ui_vCPU *v = ui_this_vcpu;
     if (!v || !v->current) return sendmsg(fd, msg, flags);
     if (ui_vcpu_ensure_ring(v) < 0) return sendmsg(fd, msg, flags);
@@ -916,8 +904,7 @@ ui_SendMsg(int fd, const struct msghdr *msg, int flags)
 }
 
 ssize_t
-ui_RecvMsg(int fd, struct msghdr *msg, int flags)
-{
+ui_RecvMsg(int64_t fd, struct msghdr *msg, int64_t flags) {
     ui_vCPU *v = ui_this_vcpu;
     if (!v || !v->current) return recvmsg(fd, msg, flags);
     if (ui_vcpu_ensure_ring(v) < 0) return recvmsg(fd, msg, flags);
@@ -958,9 +945,8 @@ ui_PollAdd_fallback(int fd, unsigned events)
     return 0;
 }
 
-int
-ui_PollAdd(int fd, unsigned events)
-{
+int64_t
+ui_PollAdd(int64_t fd, unsigned events) {
     ui_vCPU *v = ui_this_vcpu;
     if (!v || !v->current) return ui_PollAdd_fallback(fd, events);
     if (ui_vcpu_ensure_ring(v) < 0) return ui_PollAdd_fallback(fd, events);
@@ -986,8 +972,7 @@ ui_PollAdd(int fd, unsigned events)
 /* ── Multishot recvmsg + provided buffer ring ── */
 
 struct ui_RecvMulti *
-ui_RecvMulti(int fd, ui_RecvMultiCb cb, void *ctx)
-{
+ui_RecvMulti(int64_t fd, ui_RecvMultiCb cb, void *ctx) {
     ui_vCPU *v = ui_this_vcpu;
     if (!v || !v->current) return NULL;
     if (ui_vcpu_ensure_ring(v) < 0) return NULL;
@@ -1173,8 +1158,8 @@ ui_uring_submit_batch(ui_vCPU *v, unsigned count)
     ui_uring_enter(v->ring_fd, count, 0, IORING_ENTER_GETEVENTS);
 }
 
-int
-ui_SendMMsg(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags)
+int64_t
+ui_SendMMsg(int64_t fd, struct mmsghdr *msgvec, unsigned vlen, int64_t flags)
 {
     ui_vCPU *v = ui_this_vcpu;
     if (!v || !v->current) return (int)sendmmsg(fd, msgvec, vlen, flags);
@@ -1245,8 +1230,8 @@ fallback:
     }
 }
 
-int
-ui_RecvMMsg(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags)
+int64_t
+ui_RecvMMsg(int64_t fd, struct mmsghdr *msgvec, unsigned vlen, int64_t flags)
 {
     ui_vCPU *v = ui_this_vcpu;
     if (!v || !v->current) return (int)recvmmsg(fd, msgvec, vlen, flags, NULL);
@@ -1317,9 +1302,8 @@ fallback:
     }
 }
 
-int
-ui_RecvBatch(int fd, struct mmsghdr *msgvec, unsigned vlen, int flags)
-{
+int64_t
+ui_RecvBatch(int64_t fd, struct mmsghdr *msgvec, unsigned vlen, int64_t flags) {
     ui_vCPU *v = ui_this_vcpu;
     if (!v || !v->current) return -1;
     if (ui_vcpu_ensure_ring(v) < 0) return -1;

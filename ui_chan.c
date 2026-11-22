@@ -482,12 +482,9 @@ ui_select_cleanup(const uint64_t *recv_chs, const uint64_t *send_chs,
     }
 }
 
-int
-ui_SelectWait(const uint64_t *recv_chs, void **recv_bufs,
-              const uint64_t *send_chs, const void **send_vals,
-              int nrecv, int nsend, int timeout_ms)
-{
-    int total = nrecv + nsend;
+int64_t
+ui_SelectWait(const uint64_t *recv_chs, void **recv_bufs, const uint64_t *send_chs, const void **send_vals, int64_t nrecv, int64_t nsend, int64_t timeout_ms) {
+    int64_t total = nrecv + nsend;
     if (total <= 0)
     {
         if (timeout_ms == 0) return -1;
