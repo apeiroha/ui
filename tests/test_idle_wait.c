@@ -14,6 +14,7 @@
 #define _GNU_SOURCE
 #endif
 #include "ui.h"
+#include "ui_internal.h"
 
 #include <pthread.h>
 #include <stdbool.h>
@@ -36,7 +37,7 @@ now_s(void)
     return t.tv_sec + t.tv_nsec / 1e9;
 }
 
-static int g_pass, g_fail;
+static int g_pass, g_fail, g_skip;
 
 static void
 check(const char *name, bool ok, const char *detail)
@@ -144,7 +145,27 @@ static void
 test_io_wakeup_latency(void)
 {
     setenv("UI_IDLE_WAIT_MS", "2000", 1);
+    /* Pin to one vCPU so the ring probed below is the ring the reader
+     * actually uses. */
+    setenv("UI_NVCPUS", "1", 1);
     if (ui_Init() != 0) exit(1);
+
+    /* The latency assertion is specifically about wake-on-completion via
+     * IORING_REGISTER_EVENTFD.  Some CI runners/seccomp profiles allow
+     * io_uring_setup but deny io_uring_register; the runtime then falls
+     * back to the block-timeout watchdog and this test would take
+     * 40 * UI_IDLE_WAIT_MS.  That is a platform limitation, not a
+     * regression, so report SKIP instead of blocking CI for a minute. */
+    ui_vCPU *probe = &g_ui_sched.vcpus[0];
+    if (ui_vcpu_ensure_ring(probe) < 0 || !probe->cq_eventfd) {
+        printf("  TEST: blocked ui_Read wake channel ... SKIP "
+               "(io_uring completion eventfd unavailable)\n");
+        g_skip++;
+        ui_Fini();
+        unsetenv("UI_NVCPUS");
+        return;
+    }
+
     if (pipe(g_pipe) != 0) exit(1);
 
     pthread_t th;
@@ -188,6 +209,7 @@ main(void)
     test_shutdown_is_prompt();
     test_io_wakeup_latency();
 
-    printf("\n=== Results: %d passed, %d failed ===\n", g_pass, g_fail);
+    printf("\n=== Results: %d passed, %d failed, %d skipped ===\n",
+           g_pass, g_fail, g_skip);
     return g_fail ? 1 : 0;
 }
