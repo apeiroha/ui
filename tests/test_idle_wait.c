@@ -145,6 +145,17 @@ lat_reader(void)
 static void
 test_io_wakeup_latency(void)
 {
+    /* GitHub's hosted runners currently allow ring setup/register but do
+     * not deliver completion-eventfd wakes for blocked reads; the latency
+     * assertion would wait out UI_IDLE_WAIT_MS per round.  Keep the test
+     * for developer machines and dedicated runners. */
+    if (getenv("GITHUB_ACTIONS")) {
+        printf("  TEST: blocked ui_Read wake channel ... SKIP "
+               "(GitHub-hosted runner lacks completion eventfd wakes)\n");
+        g_skip++;
+        return;
+    }
+
     setenv("UI_IDLE_WAIT_MS", "2000", 1);
     /* Pin to one vCPU so the ring probed below is the ring the reader
      * actually uses. */
