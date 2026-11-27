@@ -23,6 +23,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/socket.h>
 
 /* Long enough that a timeout-driven wake costs seconds, short enough
  * that a failing run does not hang the suite for a minute. */
@@ -166,7 +167,12 @@ test_io_wakeup_latency(void)
         return;
     }
 
-    if (pipe(g_pipe) != 0) exit(1);
+    /* Use a socketpair rather than a pipe: some CI runner kernels allow
+     * io_uring_setup/register but do not post pipe-read completions to
+     * the registered eventfd, which turns this assertion into a 40 *
+     * UI_IDLE_WAIT_MS wait.  Socket completions are the path the runtime
+     * actually relies on for HTTP/TLS I/O. */
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, g_pipe) != 0) exit(1);
 
     pthread_t th;
     pthread_create(&th, NULL, lat_writer, NULL);
