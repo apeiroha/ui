@@ -368,8 +368,14 @@ main(int argc, char **argv)
 
     ui_bench_add("bench_ui_io", "ui_Read (always-available data)",
                  bench_io_fastpath, NULL, 100000);
-    ui_bench_add("bench_ui_io", "ui_Read (data not ready, park)",
-                 bench_io_park, NULL, 2000);
+    /* GitHub-hosted runners allow io_uring_setup/register but do not
+     * deliver completion-eventfd wakes for blocked reads.  The park
+     * benchmark would wait forever in ui_Run and make the collector
+     * retry this binary for 8 x 600s.  Keep it for local/dedicated
+     * runners; the POSIX control below still runs. */
+    if (!getenv("GITHUB_ACTIONS"))
+        ui_bench_add("bench_ui_io", "ui_Read (data not ready, park)",
+                     bench_io_park, NULL, 2000);
     ui_bench_add("bench_ui_io", "POSIX read() (data not ready, park)",
                  bench_posix_park, NULL, 2000);
 
