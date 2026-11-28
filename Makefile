@@ -116,6 +116,7 @@ TEST_C8_SRC = tests/test_c8_race.c
 TEST_P0_SRC = tests/test_p0.c
 TEST_UDP_SRC = tests/test_udp_echo.c
 TEST_IOPARK_SRC = tests/test_sched_iopark.c
+TEST_WRITEV_SRC = tests/test_writev.c
 TEST_OVERFLOW_SRC = tests/test_stack_overflow.c
 
 $(BUILD_DIR)/test_ui: $(TEST_UI_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
@@ -151,6 +152,12 @@ $(BUILD_DIR)/test_udp_echo: $(TEST_UDP_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/sta
 
 test-udp-echo: $(BUILD_DIR)/test_udp_echo
 	timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_udp_echo
+
+$(BUILD_DIR)/test_writev: $(TEST_WRITEV_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
+	$(CC) $(UI_CFLAGS) -I. -o $@ $^ $(LDFLAGS) $(_LIB)
+
+test-writev: $(BUILD_DIR)/test_writev
+	timeout $(TEST_TIMEOUT) ./$(BUILD_DIR)/test_writev
 
 $(BUILD_DIR)/test_sched_iopark: $(TEST_IOPARK_SRC) $(UI_SRC) $(UI_ASM) $(BUILD_DIR)/start.o | $(BUILD_DIR)
 	$(CC) $(UI_CFLAGS) -I. -o $@ $^ $(LDFLAGS) $(_LIB)
@@ -379,7 +386,7 @@ bench-ui-perf:
         bench-ui bench-ui-io bench-stack bench-idle bench-json bench-stat bench-build \
         web-install web-build web-test libui clean
 
-test: test-ui test-c8-race test-p0 test-udp-echo test-sched-iopark \
+test: test-ui test-c8-race test-p0 test-udp-echo test-writev test-sched-iopark \
        test-spawn-steal test-goro-local test-idle-wait test-stack-overflow \
        test-polladd-degraded \
        test-audit test-cycle-stress test-spawn-api test-run-reentrant \

@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 
 typedef void (*ui_Func0)(void);
 typedef void (*ui_Func1)(uintptr_t);
@@ -211,6 +212,13 @@ void     ui_RwLockFree(uint64_t rw);
 
 ssize_t  ui_Read(int64_t fd, void *buf, size_t count);
 ssize_t  ui_Write(int64_t fd, const void *buf, size_t count);
+
+/* ui_Writev — vectored write through the same io_uring path as ui_Write.
+ * iov/iovcnt follow writev(2); iov and its buffers must stay valid until
+ * the call returns (the goro parks on completion).  Additive API: existing
+ * ui_Write behavior is unchanged.  Non-goro / no-ring / SQ-full cases fall
+ * back to blocking writev(2), matching ui_Write's fallback convention. */
+ssize_t  ui_Writev(int64_t fd, const struct iovec *iov, int iovcnt);
 
 /* ui_SpliceTo — 内核 splice(2) 零拷贝搬运（io_uring SPLICE op）。
  * dst_fd/src_fd 至少一端是 pipe；off 全部沿用当前位置（io_uring 语义：

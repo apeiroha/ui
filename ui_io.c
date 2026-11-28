@@ -742,6 +742,30 @@ ui_Write(int64_t fd, const void *buf, size_t count) {
     return ui_io_submit_and_wait(v, sqe);
 }
 
+#ifndef IOV_MAX
+#define IOV_MAX 1024
+#endif
+
+ssize_t
+ui_Writev(int64_t fd, const struct iovec *iov, int iovcnt) {
+    if (iovcnt < 0 || iovcnt > IOV_MAX) return -EINVAL;
+    if (iovcnt == 0) return 0;
+
+    ui_vCPU *v = ui_this_vcpu;
+    if (!v || !v->current) return writev(fd, iov, iovcnt);
+    if (ui_vcpu_ensure_ring(v) < 0) return writev(fd, iov, iovcnt);
+
+    struct io_uring_sqe *sqe = ui_uring_get_sqe(v);
+    if (!sqe) return writev(fd, iov, iovcnt);
+
+    sqe->opcode = IORING_OP_WRITEV;
+    sqe->fd = fd;
+    sqe->addr = (unsigned long)(uintptr_t)iov;
+    sqe->len = (unsigned)iovcnt;
+    sqe->off = -1;
+    return ui_io_submit_and_wait(v, sqe);
+}
+
 ssize_t
 ui_SpliceTo(int64_t dst_fd, int64_t src_fd, size_t len, unsigned int flags) {
     ui_vCPU *v = ui_this_vcpu;
