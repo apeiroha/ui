@@ -235,11 +235,24 @@ main(int argc, char **argv)
     setvbuf(stdout, NULL, _IONBF, 0);
     printf("=== UI idle-path benchmarks ===\n\n");
 
-    /* Same body twice: the latency must not depend on the backstop. */
-    ui_bench_add("bench_idle", "idle wake latency (UI_IDLE_WAIT_MS=2000)",
-                 bench_idle_wake, (void *)&wake_long, LAT_ROUNDS);
-    ui_bench_add("bench_idle", "idle wake latency (UI_IDLE_WAIT_MS=5)",
-                 bench_idle_wake, (void *)&wake_short, LAT_ROUNDS);
+    /* Same body twice: the latency must not depend on the backstop.
+     *
+     * GitHub-hosted runners currently allow io_uring_setup/register but
+     * do not deliver completion-eventfd wakes for blocked reads.  Each
+     * round then waits out UI_IDLE_WAIT_MS, and 50 rounds x (2000ms + 5ms)
+     * is enough to make the collector retry the whole binary for ~80min.
+     * Skip these two while still collecting the idle-CPU numbers. */
+    if (!getenv("GITHUB_ACTIONS"))
+    {
+        ui_bench_add("bench_idle", "idle wake latency (UI_IDLE_WAIT_MS=2000)",
+                     bench_idle_wake, (void *)&wake_long, LAT_ROUNDS);
+        ui_bench_add("bench_idle", "idle wake latency (UI_IDLE_WAIT_MS=5)",
+                     bench_idle_wake, (void *)&wake_short, LAT_ROUNDS);
+    }
+    else
+    {
+        printf("  note: skipping idle wake-latency benchmarks on GITHUB_ACTIONS\n");
+    }
 
     /* The backstop's cost: one syscall per expiry per parked vCPU.  A
      * single round each - the measurement *is* the window. */
