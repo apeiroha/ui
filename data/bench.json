@@ -179489,7 +179489,4049 @@
           }
         }
       }
+    },
+    {
+      "id": "gh-46147918211",
+      "ref": "fix/bench-idle-ci",
+      "commit": "f5eaaf9d1353886d59eae523a58d90759ac8edac",
+      "short": "f5eaaf9d",
+      "commit_url": "https://github.com/apeiroha/ui/commit/f5eaaf9d1353886d59eae523a58d90759ac8edac",
+      "metrics": {
+        "bench_ui": {
+          "goroutine spawn+exit": 3608.21,
+          "goroutine spawn+exit (warm, pool hit)": 562.279,
+          "chan send+recv (buffered)": 16.953,
+          "chan try_send+recv": 16.997,
+          "mutex lock+unlock (uncontested)": 13.134,
+          "mutex trylock+unlock (uncontested)": 16.154,
+          "mutex contention spin (50 goros × 1000)": 111.161,
+          "mutex contention work (50 goros × 1000)": 998.524,
+          "mutex contention (50 goros × 100 iter)": 98.586,
+          "chan ping-pong (unbuffered, 2 goros)": 195.722,
+          "local fanout spawn+exit": 1415.535,
+          "rwlock read (single goro)": 13.277,
+          "rwlock read (4 goros, multi-vcpu)": 40.12,
+          "rwlock read (4 goros + writer)": 41.624,
+          "rwlock write (4 goros, multi-vcpu)": 92.062,
+          "select wait (1 channel)": 9.459,
+          "select wait (4 channels)": 25.811,
+          "select wait (16 channels)": 92.068,
+          "select wait (64 channels)": 359.882
+        },
+        "bench_ui_io": {
+          "ui_Read (always-available data)": 728.443,
+          "POSIX read() (data not ready, park)": 6460.64,
+          "io_uring enter floor (1 SQE)": 160.211,
+          "io_uring enter floor (8 SQE)": 35.1,
+          "io_uring enter floor (64 SQE)": 19.5
+        },
+        "bench_stack": {
+          "goroutine spawn+exit (warm, MADV_FREE)": 2474.795,
+          "goroutine spawn+exit (warm, MADV_DONTNEED)": 2805.45,
+          "goroutine spawn+exit (warm, keep pages)": 703.416,
+          "goroutine spawn+exit (warm, 4MB budget)": 2681.95,
+          "stack pool RSS (MADV_FREE)": 15.953,
+          "stack pool RSS (MADV_DONTNEED)": 3.15,
+          "stack pool RSS (keep pages)": 21.18,
+          "VMA count (1000 goroutines)": 2022,
+          "goroutine spawn+exit (deep stack, 64KB)": 10407.3,
+          "stack pool RSS (deep stack, keep pages)": 248.037,
+          "stack pool RSS (deep stack, DONTNEED)": 3.037
+        },
+        "bench_idle": {
+          "idle CPU (UI_IDLE_WAIT_MS=10)": 10.254,
+          "idle CPU (UI_IDLE_WAIT_MS=100)": 2.065,
+          "idle CPU (UI_IDLE_WAIT_MS=1000)": 0.636
+        }
+      },
+      "stats": {
+        "bench_ui": {
+          "goroutine spawn+exit": {
+            "unit": "ns/op",
+            "n": 10000,
+            "samples": [
+              3604.58,
+              3697.43,
+              3521.53,
+              3719.56,
+              3572.96,
+              3639.36,
+              3551.22,
+              3759.78,
+              3625.31,
+              3783.44,
+              3668.84,
+              3611.84,
+              3547.82,
+              3582.6,
+              3673.21,
+              3559.81,
+              3537.93,
+              3541.68
+            ],
+            "min": 3521.53,
+            "p50": 3608.21,
+            "p95": 3763.329,
+            "max": 3783.44,
+            "mean": 3622.161,
+            "stdev": 79.609,
+            "cv_pct": 2.198,
+            "nsamples": 18
+          },
+          "goroutine spawn+exit (warm, pool hit)": {
+            "unit": "ns/op",
+            "n": 99840,
+            "samples": [
+              603.277,
+              564.373,
+              586.334,
+              563.15,
+              580.014,
+              532.176,
+              534.017,
+              503.805,
+              544.565,
+              586.385,
+              555.066,
+              561.407,
+              548.463,
+              540.965,
+              558.255,
+              583.098,
+              586.116,
+              612.41
+            ],
+            "min": 503.805,
+            "p50": 562.279,
+            "p95": 604.647,
+            "max": 612.41,
+            "mean": 563.549,
+            "stdev": 27.438,
+            "cv_pct": 4.869,
+            "nsamples": 18
+          },
+          "chan send+recv (buffered)": {
+            "unit": "ns/op",
+            "n": 100000,
+            "samples": [
+              17.763,
+              17.01,
+              16.692,
+              17.103,
+              16.598,
+              17.049,
+              17.231,
+              17.286,
+              16.544,
+              17.171,
+              16.896,
+              16.705,
+              18.204,
+              16.617,
+              17.219,
+              16.781,
+              16.72,
+              16.72
+            ],
+            "min": 16.544,
+            "p50": 16.953,
+            "p95": 17.829,
+            "max": 18.204,
+            "mean": 17.017,
+            "stdev": 0.431,
+            "cv_pct": 2.535,
+            "nsamples": 18
+          },
+          "chan try_send+recv": {
+            "unit": "ns/op",
+            "n": 100000,
+            "samples": [
+              17.354,
+              17.069,
+              16.781,
+              17.349,
+              16.644,
+              16.785,
+              16.65,
+              16.943,
+              16.614,
+              17.128,
+              17.2,
+              17.052,
+              16.672,
+              18.026,
+              17.914,
+              16.66,
+              17.169,
+              16.537
+            ],
+            "min": 16.537,
+            "p50": 16.997,
+            "p95": 17.93,
+            "max": 18.026,
+            "mean": 17.03,
+            "stdev": 0.43,
+            "cv_pct": 2.525,
+            "nsamples": 18
+          },
+          "mutex lock+unlock (uncontested)": {
+            "unit": "ns/op",
+            "n": 2000000,
+            "samples": [
+              13.109,
+              13.138,
+              13.077,
+              13.182,
+              13.136,
+              13.132,
+              13.211,
+              13.745,
+              13.21,
+              13.186,
+              13.144,
+              13.127,
+              13.111,
+              13.132,
+              13.174,
+              13.052,
+              13.119,
+              13.072
+            ],
+            "min": 13.052,
+            "p50": 13.134,
+            "p95": 13.291,
+            "max": 13.745,
+            "mean": 13.17,
+            "stdev": 0.15,
+            "cv_pct": 1.142,
+            "nsamples": 18
+          },
+          "mutex trylock+unlock (uncontested)": {
+            "unit": "ns/op",
+            "n": 2000000,
+            "samples": [
+              16.219,
+              15.961,
+              16.197,
+              16.099,
+              16.176,
+              16.195,
+              16.114,
+              16.081,
+              16.046,
+              16.116,
+              16.118,
+              16.1,
+              16.172,
+              16.211,
+              16.163,
+              16.144,
+              16.165,
+              16.202
+            ],
+            "min": 15.961,
+            "p50": 16.154,
+            "p95": 16.212,
+            "max": 16.219,
+            "mean": 16.138,
+            "stdev": 0.066,
+            "cv_pct": 0.409,
+            "nsamples": 18
+          },
+          "mutex contention spin (50 goros × 1000)": {
+            "unit": "ns/op",
+            "n": 500000,
+            "samples": [
+              92.009,
+              152.592,
+              60.723,
+              120.984,
+              135.899,
+              85.284,
+              142.309,
+              161.98,
+              94.056,
+              68.096,
+              86.644,
+              90.19,
+              101.337,
+              135.527,
+              126.908,
+              134.37,
+              53.002,
+              132.148
+            ],
+            "min": 53.002,
+            "p50": 111.161,
+            "p95": 154,
+            "max": 161.98,
+            "mean": 109.67,
+            "stdev": 32.545,
+            "cv_pct": 29.675,
+            "nsamples": 18
+          },
+          "mutex contention work (50 goros × 1000)": {
+            "unit": "ns/op",
+            "n": 50000,
+            "samples": [
+              1496.02,
+              1042.89,
+              944.674,
+              992.005,
+              1000.31,
+              994.767,
+              1025.26,
+              1050.36,
+              996.738,
+              962.292,
+              961.678,
+              959.911,
+              941.111,
+              1036.73,
+              953.384,
+              1030.12,
+              1019.82,
+              1025.4
+            ],
+            "min": 941.111,
+            "p50": 998.524,
+            "p95": 1117.209,
+            "max": 1496.02,
+            "mean": 1024.082,
+            "stdev": 123.003,
+            "cv_pct": 12.011,
+            "nsamples": 18
+          },
+          "mutex contention (50 goros × 100 iter)": {
+            "unit": "ns/op",
+            "n": 50000,
+            "samples": [
+              91.961,
+              89.277,
+              85.623,
+              94.071,
+              84.363,
+              101.116,
+              105.738,
+              122.667,
+              110.08,
+              109.46,
+              34.151,
+              89.18,
+              113.375,
+              90.372,
+              96.056,
+              117.663,
+              127.663,
+              127.217
+            ],
+            "min": 34.151,
+            "p50": 98.586,
+            "p95": 127.284,
+            "max": 127.663,
+            "mean": 99.446,
+            "stdev": 21.636,
+            "cv_pct": 21.756,
+            "nsamples": 18
+          },
+          "chan ping-pong (unbuffered, 2 goros)": {
+            "unit": "ns/op",
+            "n": 50000,
+            "samples": [
+              218.652,
+              195.286,
+              200.108,
+              173.698,
+              206.599,
+              167.714,
+              196.157,
+              205.003,
+              205.445,
+              203.039,
+              188.384,
+              205.198,
+              199.659,
+              164.749,
+              193.563,
+              169.801,
+              194.978,
+              173.37
+            ],
+            "min": 164.749,
+            "p50": 195.722,
+            "p95": 208.407,
+            "max": 218.652,
+            "mean": 192.3,
+            "stdev": 15.815,
+            "cv_pct": 8.224,
+            "nsamples": 18
+          },
+          "local fanout spawn+exit": {
+            "unit": "ns/op",
+            "n": 10000,
+            "samples": [
+              991.273,
+              1007.24,
+              1030.44,
+              1483.71,
+              1424.01,
+              1427.7,
+              1426.1,
+              1449.25,
+              1443.61,
+              1404.25,
+              974.488,
+              1385.2,
+              1040.87,
+              1429.1,
+              1471.85,
+              1430.67,
+              1407.06,
+              1387.33
+            ],
+            "min": 974.488,
+            "p50": 1415.535,
+            "p95": 1473.629,
+            "max": 1483.71,
+            "mean": 1311.897,
+            "stdev": 195.383,
+            "cv_pct": 14.893,
+            "nsamples": 18
+          },
+          "rwlock read (single goro)": {
+            "unit": "ns/op",
+            "n": 1000000,
+            "samples": [
+              13.264,
+              13.484,
+              13.401,
+              13.124,
+              13.335,
+              13.232,
+              13.349,
+              13.134,
+              13.356,
+              13.339,
+              13.225,
+              13.131,
+              13.475,
+              13.328,
+              13.269,
+              13.143,
+              13.285,
+              13.171
+            ],
+            "min": 13.124,
+            "p50": 13.277,
+            "p95": 13.476,
+            "max": 13.484,
+            "mean": 13.28,
+            "stdev": 0.113,
+            "cv_pct": 0.852,
+            "nsamples": 18
+          },
+          "rwlock read (4 goros, multi-vcpu)": {
+            "unit": "ns/op",
+            "n": 2000000,
+            "samples": [
+              38.178,
+              43.107,
+              38.037,
+              41.363,
+              38.553,
+              43.243,
+              34.824,
+              42.768,
+              36.152,
+              42.773,
+              34.652,
+              43.04,
+              38.874,
+              45.251,
+              38.776,
+              45.426,
+              38.878,
+              45.15
+            ],
+            "min": 34.652,
+            "p50": 40.12,
+            "p95": 45.277,
+            "max": 45.426,
+            "mean": 40.502,
+            "stdev": 3.507,
+            "cv_pct": 8.659,
+            "nsamples": 18
+          },
+          "rwlock read (4 goros + writer)": {
+            "unit": "ns/op",
+            "n": 2000000,
+            "samples": [
+              39.166,
+              44.307,
+              38.507,
+              44.034,
+              39.473,
+              43.907,
+              35.737,
+              43.258,
+              40.017,
+              43.715,
+              39.84,
+              43.559,
+              36.401,
+              44.207,
+              36.507,
+              45.913,
+              39.43,
+              43.232
+            ],
+            "min": 35.737,
+            "p50": 41.624,
+            "p95": 44.548,
+            "max": 45.913,
+            "mean": 41.178,
+            "stdev": 3.182,
+            "cv_pct": 7.728,
+            "nsamples": 18
+          },
+          "rwlock write (4 goros, multi-vcpu)": {
+            "unit": "ns/op",
+            "n": 800000,
+            "samples": [
+              94.068,
+              47.284,
+              94.5,
+              95.399,
+              92.773,
+              92.389,
+              91.758,
+              95.184,
+              88.452,
+              96.065,
+              90.903,
+              93.499,
+              89.969,
+              59.244,
+              88.437,
+              49.263,
+              92.366,
+              79.143
+            ],
+            "min": 47.284,
+            "p50": 92.062,
+            "p95": 95.498,
+            "max": 96.065,
+            "mean": 85.039,
+            "stdev": 15.857,
+            "cv_pct": 18.647,
+            "nsamples": 18
+          },
+          "select wait (1 channel)": {
+            "unit": "ns/op",
+            "n": 200000,
+            "samples": [
+              10.275,
+              9.695,
+              10.361,
+              9.753,
+              10.223,
+              9.466,
+              9.078,
+              9.136,
+              8.974,
+              8.869,
+              9.177,
+              9.045,
+              9.442,
+              9.625,
+              9.451,
+              9.407,
+              9.641,
+              9.579
+            ],
+            "min": 8.869,
+            "p50": 9.459,
+            "p95": 10.288,
+            "max": 10.361,
+            "mean": 9.511,
+            "stdev": 0.442,
+            "cv_pct": 4.645,
+            "nsamples": 18
+          },
+          "select wait (4 channels)": {
+            "unit": "ns/op",
+            "n": 200000,
+            "samples": [
+              26.521,
+              25.802,
+              26.161,
+              25.815,
+              26.463,
+              26.122,
+              25.23,
+              25.437,
+              25.522,
+              25.275,
+              25.404,
+              25.453,
+              27.398,
+              25.844,
+              25.982,
+              25.807,
+              25.78,
+              25.824
+            ],
+            "min": 25.23,
+            "p50": 25.811,
+            "p95": 26.653,
+            "max": 27.398,
+            "mean": 25.88,
+            "stdev": 0.529,
+            "cv_pct": 2.043,
+            "nsamples": 18
+          },
+          "select wait (16 channels)": {
+            "unit": "ns/op",
+            "n": 100000,
+            "samples": [
+              94.35,
+              92.068,
+              95.23,
+              92.069,
+              93.773,
+              91.291,
+              91.507,
+              92.42,
+              91.531,
+              91.899,
+              91.505,
+              92.438,
+              94.375,
+              91.348,
+              92.973,
+              91.8,
+              94.748,
+              91.924
+            ],
+            "min": 91.291,
+            "p50": 92.068,
+            "p95": 94.82,
+            "max": 95.23,
+            "mean": 92.625,
+            "stdev": 1.29,
+            "cv_pct": 1.392,
+            "nsamples": 18
+          },
+          "select wait (64 channels)": {
+            "unit": "ns/op",
+            "n": 20000,
+            "samples": [
+              361.02,
+              356.521,
+              366.187,
+              359.108,
+              359.01,
+              361.383,
+              362.837,
+              360.613,
+              357.155,
+              359.998,
+              363.913,
+              355.884,
+              357.827,
+              359.766,
+              368.799,
+              359.416,
+              360.732,
+              356.114
+            ],
+            "min": 355.884,
+            "p50": 359.882,
+            "p95": 366.579,
+            "max": 368.799,
+            "mean": 360.349,
+            "stdev": 3.429,
+            "cv_pct": 0.952,
+            "nsamples": 18
+          }
+        },
+        "bench_ui_io": {
+          "ui_Read (always-available data)": {
+            "unit": "ns/op",
+            "n": 6554,
+            "samples": [
+              737.709,
+              730.396,
+              700.777,
+              715.579,
+              745.831,
+              716.058,
+              726.521,
+              727.055,
+              735.097,
+              752.677,
+              729.83,
+              739.315,
+              734.415,
+              740.746,
+              720.076,
+              726.228,
+              712.657,
+              712.326
+            ],
+            "min": 700.777,
+            "p50": 728.443,
+            "p95": 746.858,
+            "max": 752.677,
+            "mean": 727.961,
+            "stdev": 13.285,
+            "cv_pct": 1.825,
+            "nsamples": 18,
+            "extra": {
+              "prefilled": {
+                "value": 6554,
+                "unit": "chunks"
+              }
+            }
+          },
+          "POSIX read() (data not ready, park)": {
+            "unit": "ns/op",
+            "n": 2000,
+            "samples": [
+              7105.43,
+              6360.34,
+              6424.99,
+              6281.01,
+              6373.41,
+              6259.39,
+              6432.14,
+              6642.04,
+              6489.14,
+              6409.46,
+              6385.95,
+              6328.82,
+              6582.97,
+              6608.45,
+              6757.5,
+              6588.4,
+              6591.45,
+              6859.6
+            ],
+            "min": 6259.39,
+            "p50": 6460.64,
+            "p95": 6896.475,
+            "max": 7105.43,
+            "mean": 6526.694,
+            "stdev": 217.82,
+            "cv_pct": 3.337,
+            "nsamples": 18
+          },
+          "io_uring enter floor (1 SQE)": {
+            "unit": "ns/op",
+            "n": 20000,
+            "samples": [
+              160.066,
+              160.033,
+              159.835,
+              159.354,
+              159.726,
+              164.206,
+              159.665,
+              160.355,
+              161.152,
+              159.889,
+              160.723,
+              159.522,
+              160.893,
+              160.568,
+              161.507,
+              159.661,
+              161.659,
+              160.528
+            ],
+            "min": 159.354,
+            "p50": 160.211,
+            "p95": 162.041,
+            "max": 164.206,
+            "mean": 160.519,
+            "stdev": 1.144,
+            "cv_pct": 0.712,
+            "nsamples": 18,
+            "extra": {
+              "sqe_per_enter": {
+                "value": 1,
+                "unit": "count"
+              }
+            }
+          },
+          "io_uring enter floor (8 SQE)": {
+            "unit": "ns/op",
+            "n": 20000,
+            "samples": [
+              36.344,
+              35.662,
+              35.504,
+              34.556,
+              35.503,
+              35.644,
+              35.857,
+              34.974,
+              34.529,
+              34.145,
+              35.21,
+              35.413,
+              35.665,
+              34.957,
+              34.715,
+              34.173,
+              34.991,
+              34.936
+            ],
+            "min": 34.145,
+            "p50": 35.1,
+            "p95": 35.93,
+            "max": 36.344,
+            "mean": 35.154,
+            "stdev": 0.597,
+            "cv_pct": 1.697,
+            "nsamples": 18,
+            "extra": {
+              "sqe_per_enter": {
+                "value": 8,
+                "unit": "count"
+              }
+            }
+          },
+          "io_uring enter floor (64 SQE)": {
+            "unit": "ns/op",
+            "n": 20032,
+            "samples": [
+              19.863,
+              19.179,
+              19.59,
+              19.161,
+              19.2,
+              19.871,
+              19.862,
+              19.173,
+              19.751,
+              19.329,
+              19.792,
+              19.424,
+              19.199,
+              19.577,
+              19.787,
+              19.306,
+              19.898,
+              19.422
+            ],
+            "min": 19.161,
+            "p50": 19.5,
+            "p95": 19.875,
+            "max": 19.898,
+            "mean": 19.521,
+            "stdev": 0.285,
+            "cv_pct": 1.459,
+            "nsamples": 18,
+            "extra": {
+              "sqe_per_enter": {
+                "value": 64,
+                "unit": "count"
+              }
+            }
+          }
+        },
+        "bench_stack": {
+          "goroutine spawn+exit (warm, MADV_FREE)": {
+            "unit": "ns/op",
+            "n": 50000,
+            "samples": [
+              2461.08,
+              2530.42,
+              2381.86,
+              2450.78,
+              2514.51,
+              2542.3,
+              2528.13,
+              2458.31,
+              2555.05,
+              2377.08,
+              2515.22,
+              2461.11,
+              2353.94,
+              2541.25,
+              2432.02,
+              2519.94,
+              2488.48,
+              2360.83
+            ],
+            "min": 2353.94,
+            "p50": 2474.795,
+            "p95": 2544.213,
+            "max": 2555.05,
+            "mean": 2470.684,
+            "stdev": 66.562,
+            "cv_pct": 2.694,
+            "nsamples": 18
+          },
+          "goroutine spawn+exit (warm, MADV_DONTNEED)": {
+            "unit": "ns/op",
+            "n": 50000,
+            "samples": [
+              2926.55,
+              2926.6,
+              2863.37,
+              2938.29,
+              2762,
+              2914.3,
+              2760.06,
+              2801.99,
+              2878.12,
+              2782.04,
+              2797.07,
+              2815.02,
+              2719.57,
+              2752.64,
+              2739.64,
+              2903.77,
+              2808.91,
+              2723.31
+            ],
+            "min": 2719.57,
+            "p50": 2805.45,
+            "p95": 2928.353,
+            "max": 2938.29,
+            "mean": 2822.958,
+            "stdev": 75.75,
+            "cv_pct": 2.683,
+            "nsamples": 18
+          },
+          "goroutine spawn+exit (warm, keep pages)": {
+            "unit": "ns/op",
+            "n": 50000,
+            "samples": [
+              686.82,
+              730.532,
+              680.268,
+              745.409,
+              708.347,
+              684.488,
+              690.815,
+              637.908,
+              621.297,
+              754.762,
+              763.023,
+              725.494,
+              695.918,
+              738.107,
+              698.485,
+              720.361,
+              720.717,
+              663.193
+            ],
+            "min": 621.297,
+            "p50": 703.416,
+            "p95": 756.001,
+            "max": 763.023,
+            "mean": 703.664,
+            "stdev": 38.387,
+            "cv_pct": 5.455,
+            "nsamples": 18
+          },
+          "goroutine spawn+exit (warm, 4MB budget)": {
+            "unit": "ns/op",
+            "n": 50000,
+            "samples": [
+              2599.66,
+              2603.9,
+              2724.52,
+              2680.83,
+              2693.14,
+              2654.69,
+              2632.64,
+              2644.82,
+              2691.73,
+              2804.58,
+              2635.16,
+              2720.64,
+              2622.34,
+              2705.05,
+              2593.13,
+              2807.29,
+              2767.31,
+              2683.07
+            ],
+            "min": 2593.13,
+            "p50": 2681.95,
+            "p95": 2804.987,
+            "max": 2807.29,
+            "mean": 2681.361,
+            "stdev": 65.594,
+            "cv_pct": 2.446,
+            "nsamples": 18
+          },
+          "stack pool RSS (MADV_FREE)": {
+            "unit": "MiB",
+            "n": 50000,
+            "samples": [
+              17.508,
+              17.254,
+              17.535,
+              16.492,
+              15.254,
+              17.102,
+              14.984,
+              16.051,
+              14.688,
+              15.727,
+              13.91,
+              17.02,
+              13.926,
+              15.555,
+              16.137,
+              15.781,
+              16.547,
+              15.856
+            ],
+            "min": 13.91,
+            "p50": 15.953,
+            "p95": 17.512,
+            "max": 17.535,
+            "mean": 15.962,
+            "stdev": 1.12,
+            "cv_pct": 7.015,
+            "nsamples": 18,
+            "extra": {
+              "spawn": {
+                "value": 2395.31,
+                "unit": "ns/op"
+              }
+            }
+          },
+          "stack pool RSS (MADV_DONTNEED)": {
+            "unit": "MiB",
+            "n": 50000,
+            "samples": [
+              3.137,
+              3.332,
+              2.879,
+              2.836,
+              3.383,
+              3.051,
+              3.344,
+              3.164,
+              3.129,
+              3.129,
+              3.129,
+              3.223,
+              3.453,
+              3.105,
+              2.969,
+              3.402,
+              3.957,
+              3.453
+            ],
+            "min": 2.836,
+            "p50": 3.15,
+            "p95": 3.529,
+            "max": 3.957,
+            "mean": 3.226,
+            "stdev": 0.259,
+            "cv_pct": 8.035,
+            "nsamples": 18,
+            "extra": {
+              "spawn": {
+                "value": 2885.57,
+                "unit": "ns/op"
+              }
+            }
+          },
+          "stack pool RSS (keep pages)": {
+            "unit": "MiB",
+            "n": 50000,
+            "samples": [
+              25.285,
+              19.734,
+              26.469,
+              20.758,
+              20.672,
+              21.773,
+              24.133,
+              23.336,
+              25.535,
+              20.945,
+              22.07,
+              23.516,
+              19.688,
+              20.973,
+              20.438,
+              20.09,
+              21.387,
+              18.527
+            ],
+            "min": 18.527,
+            "p50": 21.18,
+            "p95": 25.675,
+            "max": 26.469,
+            "mean": 21.963,
+            "stdev": 2.254,
+            "cv_pct": 10.265,
+            "nsamples": 18,
+            "extra": {
+              "spawn": {
+                "value": 654.378,
+                "unit": "ns/op"
+              }
+            }
+          },
+          "VMA count (1000 goroutines)": {
+            "unit": "count",
+            "n": 1000,
+            "samples": [
+              2022,
+              2022,
+              2022,
+              2022,
+              2022,
+              2022,
+              2022,
+              2022,
+              2022,
+              2022,
+              2022,
+              2022,
+              2022,
+              2022,
+              2022,
+              2022,
+              2022,
+              2022
+            ],
+            "min": 2022,
+            "p50": 2022,
+            "p95": 2022,
+            "max": 2022,
+            "mean": 2022,
+            "stdev": 0,
+            "cv_pct": 0,
+            "nsamples": 18,
+            "extra": {
+              "vma_delta": {
+                "value": 1488,
+                "unit": "count"
+              },
+              "rss": {
+                "value": 6.92578,
+                "unit": "MiB"
+              }
+            }
+          },
+          "goroutine spawn+exit (deep stack, 64KB)": {
+            "unit": "ns/op",
+            "n": 25000,
+            "samples": [
+              10416.7,
+              10295.1,
+              10733.7,
+              10274.9,
+              10276.7,
+              10509.3,
+              10854.9,
+              10464.3,
+              10428.5,
+              10601.8,
+              10365.4,
+              10660.5,
+              10260.4,
+              9994.56,
+              11051.9,
+              10397.9,
+              10014.4,
+              10145.6
+            ],
+            "min": 9994.56,
+            "p50": 10407.3,
+            "p95": 10884.45,
+            "max": 11051.9,
+            "mean": 10430.364,
+            "stdev": 275.762,
+            "cv_pct": 2.644,
+            "nsamples": 18
+          },
+          "stack pool RSS (deep stack, keep pages)": {
+            "unit": "MiB",
+            "n": 25000,
+            "samples": [
+              265.57,
+              239.523,
+              268.191,
+              191.711,
+              271.504,
+              239.82,
+              168.781,
+              237.34,
+              246.797,
+              259.207,
+              249.277,
+              163.789,
+              279.062,
+              266.031,
+              265.613,
+              210.441,
+              315.445,
+              188.738
+            ],
+            "min": 163.789,
+            "p50": 248.037,
+            "p95": 284.519,
+            "max": 315.445,
+            "mean": 240.38,
+            "stdev": 40.737,
+            "cv_pct": 16.947,
+            "nsamples": 18,
+            "extra": {
+              "spawn": {
+                "value": 2984.76,
+                "unit": "ns/op"
+              }
+            }
+          },
+          "stack pool RSS (deep stack, DONTNEED)": {
+            "unit": "MiB",
+            "n": 25000,
+            "samples": [
+              3.063,
+              3.18,
+              3.129,
+              3.063,
+              3.063,
+              3.063,
+              2.953,
+              2.977,
+              2.91,
+              2.91,
+              2.93,
+              2.91,
+              3.191,
+              2.969,
+              3.117,
+              2.969,
+              3.063,
+              3.012
+            ],
+            "min": 2.91,
+            "p50": 3.037,
+            "p95": 3.181,
+            "max": 3.191,
+            "mean": 3.026,
+            "stdev": 0.091,
+            "cv_pct": 3.005,
+            "nsamples": 18,
+            "extra": {
+              "spawn": {
+                "value": 10776.9,
+                "unit": "ns/op"
+              }
+            }
+          }
+        },
+        "bench_idle": {
+          "idle CPU (UI_IDLE_WAIT_MS=10)": {
+            "unit": "ms CPU",
+            "n": 1000,
+            "samples": [
+              9.256,
+              10.758,
+              10.254
+            ],
+            "min": 9.256,
+            "p50": 10.254,
+            "p95": 10.708,
+            "max": 10.758,
+            "mean": 10.089,
+            "stdev": 0.764,
+            "cv_pct": 7.577,
+            "nsamples": 3,
+            "extra": {
+              "window": {
+                "value": 1000,
+                "unit": "ms"
+              },
+              "idle_wait": {
+                "value": 10,
+                "unit": "ms"
+              },
+              "nvcpus": {
+                "value": 4,
+                "unit": "count"
+              }
+            }
+          },
+          "idle CPU (UI_IDLE_WAIT_MS=100)": {
+            "unit": "ms CPU",
+            "n": 1000,
+            "samples": [
+              2.065,
+              2.065,
+              2.096
+            ],
+            "min": 2.065,
+            "p50": 2.065,
+            "p95": 2.093,
+            "max": 2.096,
+            "mean": 2.075,
+            "stdev": 0.018,
+            "cv_pct": 0.869,
+            "nsamples": 3,
+            "extra": {
+              "window": {
+                "value": 1000,
+                "unit": "ms"
+              },
+              "idle_wait": {
+                "value": 100,
+                "unit": "ms"
+              },
+              "nvcpus": {
+                "value": 4,
+                "unit": "count"
+              }
+            }
+          },
+          "idle CPU (UI_IDLE_WAIT_MS=1000)": {
+            "unit": "ms CPU",
+            "n": 1000,
+            "samples": [
+              0.636,
+              0.577,
+              0.727
+            ],
+            "min": 0.577,
+            "p50": 0.636,
+            "p95": 0.718,
+            "max": 0.727,
+            "mean": 0.647,
+            "stdev": 0.076,
+            "cv_pct": 11.722,
+            "nsamples": 3,
+            "extra": {
+              "window": {
+                "value": 1000,
+                "unit": "ms"
+              },
+              "idle_wait": {
+                "value": 1000,
+                "unit": "ms"
+              },
+              "nvcpus": {
+                "value": 4,
+                "unit": "count"
+              }
+            }
+          }
+        }
+      },
+      "date": "2026-11-28T13:07:24Z",
+      "run_url": "https://github.com/apeiroha/ui/actions/runs/46147918211",
+      "env": {
+        "nvcpus": 4,
+        "toolchain": "clang",
+        "build": "release",
+        "iters": 3,
+        "count": 6,
+        "paired": true,
+        "harness": "v2",
+        "cpu_model": "Intel(R) Xeon(R) 6975P-C",
+        "kernel": "7.0.0-1018-aws",
+        "cpus_allowed": "0-3",
+        "runner": "github-hosted"
+      },
+      "base": {
+        "ref": "main",
+        "commit": "5b768960ccbc642d8e80c59b4ac5c82d181c8693",
+        "short": "5b768960",
+        "commit_url": "https://github.com/apeiroha/ui/commit/5b768960ccbc642d8e80c59b4ac5c82d181c8693",
+        "metrics": {
+          "bench_ui": {
+            "goroutine spawn+exit": 3636.055,
+            "goroutine spawn+exit (warm, pool hit)": 577.345,
+            "chan send+recv (buffered)": 17.231,
+            "chan try_send+recv": 17.023,
+            "mutex lock+unlock (uncontested)": 13.159,
+            "mutex trylock+unlock (uncontested)": 16.193,
+            "mutex contention spin (50 goros × 1000)": 131.703,
+            "mutex contention work (50 goros × 1000)": 994.885,
+            "mutex contention (50 goros × 100 iter)": 93.757,
+            "chan ping-pong (unbuffered, 2 goros)": 182.3,
+            "local fanout spawn+exit": 1441.21,
+            "rwlock read (single goro)": 13.272,
+            "rwlock read (4 goros, multi-vcpu)": 39.533,
+            "rwlock read (4 goros + writer)": 40.47,
+            "rwlock write (4 goros, multi-vcpu)": 89.668,
+            "select wait (1 channel)": 9.682,
+            "select wait (4 channels)": 26.293,
+            "select wait (16 channels)": 93.018,
+            "select wait (64 channels)": 360.952
+          },
+          "bench_ui_io": {
+            "ui_Read (always-available data)": 731.165,
+            "POSIX read() (data not ready, park)": 6477.565,
+            "io_uring enter floor (1 SQE)": 160.38,
+            "io_uring enter floor (8 SQE)": 34.849,
+            "io_uring enter floor (64 SQE)": 20.023
+          },
+          "bench_stack": {
+            "goroutine spawn+exit (warm, MADV_FREE)": 2477.23,
+            "goroutine spawn+exit (warm, MADV_DONTNEED)": 2841.53,
+            "goroutine spawn+exit (warm, keep pages)": 708.588,
+            "goroutine spawn+exit (warm, 4MB budget)": 2649.045,
+            "stack pool RSS (MADV_FREE)": 16.143,
+            "stack pool RSS (MADV_DONTNEED)": 3.701,
+            "stack pool RSS (keep pages)": 21.613,
+            "VMA count (1000 goroutines)": 2022,
+            "goroutine spawn+exit (deep stack, 64KB)": 10007.7,
+            "stack pool RSS (deep stack, keep pages)": 247.237,
+            "stack pool RSS (deep stack, DONTNEED)": 3.941
+          },
+          "bench_idle": {
+            "idle CPU (UI_IDLE_WAIT_MS=10)": 9.787,
+            "idle CPU (UI_IDLE_WAIT_MS=100)": 1.856,
+            "idle CPU (UI_IDLE_WAIT_MS=1000)": 0.57
+          }
+        },
+        "stats": {
+          "bench_ui": {
+            "goroutine spawn+exit": {
+              "unit": "ns/op",
+              "n": 10000,
+              "samples": [
+                3962.07,
+                3576.8,
+                3623.77,
+                3633.6,
+                3570.28,
+                3533.09,
+                3516.62,
+                3572.36,
+                3616.48,
+                3620.68,
+                3741.08,
+                3729.56,
+                3638.51,
+                3670.55,
+                3693.25,
+                3828.77,
+                3750.29,
+                3680
+              ],
+              "min": 3516.62,
+              "p50": 3636.055,
+              "p95": 3848.765,
+              "max": 3962.07,
+              "mean": 3664.32,
+              "stdev": 110.028,
+              "cv_pct": 3.003,
+              "nsamples": 18
+            },
+            "goroutine spawn+exit (warm, pool hit)": {
+              "unit": "ns/op",
+              "n": 99840,
+              "samples": [
+                586.064,
+                524.531,
+                577.284,
+                526.183,
+                606.346,
+                500.284,
+                609.116,
+                557.877,
+                520.483,
+                543.844,
+                567.527,
+                589.941,
+                595.586,
+                585.379,
+                584.828,
+                606.274,
+                517.775,
+                577.406
+              ],
+              "min": 500.284,
+              "p50": 577.345,
+              "p95": 606.762,
+              "max": 609.116,
+              "mean": 565.374,
+              "stdev": 34.743,
+              "cv_pct": 6.145,
+              "nsamples": 18
+            },
+            "chan send+recv (buffered)": {
+              "unit": "ns/op",
+              "n": 100000,
+              "samples": [
+                18.009,
+                17.735,
+                16.907,
+                17.559,
+                17.41,
+                17.021,
+                18.4,
+                16.998,
+                16.602,
+                18.399,
+                16.972,
+                17.278,
+                17.228,
+                16.705,
+                17.27,
+                17.045,
+                16.716,
+                17.235
+              ],
+              "min": 16.602,
+              "p50": 17.231,
+              "p95": 18.399,
+              "max": 18.4,
+              "mean": 17.305,
+              "stdev": 0.536,
+              "cv_pct": 3.096,
+              "nsamples": 18
+            },
+            "chan try_send+recv": {
+              "unit": "ns/op",
+              "n": 100000,
+              "samples": [
+                16.546,
+                18.013,
+                17.105,
+                17.38,
+                17.422,
+                18.255,
+                16.538,
+                17.059,
+                17.228,
+                16.574,
+                17.959,
+                16.988,
+                16.588,
+                16.514,
+                16.51,
+                17.057,
+                16.695,
+                16.64
+              ],
+              "min": 16.51,
+              "p50": 17.023,
+              "p95": 18.049,
+              "max": 18.255,
+              "mean": 17.059,
+              "stdev": 0.559,
+              "cv_pct": 3.279,
+              "nsamples": 18
+            },
+            "mutex lock+unlock (uncontested)": {
+              "unit": "ns/op",
+              "n": 2000000,
+              "samples": [
+                13.194,
+                13.236,
+                13.248,
+                13.159,
+                13.175,
+                13.217,
+                13.151,
+                13.16,
+                13.087,
+                13.184,
+                13.193,
+                13.112,
+                13.116,
+                13.06,
+                13.178,
+                13.152,
+                13.048,
+                13.083
+              ],
+              "min": 13.048,
+              "p50": 13.159,
+              "p95": 13.238,
+              "max": 13.248,
+              "mean": 13.153,
+              "stdev": 0.058,
+              "cv_pct": 0.442,
+              "nsamples": 18
+            },
+            "mutex trylock+unlock (uncontested)": {
+              "unit": "ns/op",
+              "n": 2000000,
+              "samples": [
+                16.157,
+                16.195,
+                16.23,
+                16.248,
+                16.222,
+                16.258,
+                16.18,
+                16.257,
+                16.215,
+                16.221,
+                16.133,
+                16.192,
+                16.082,
+                16.13,
+                16.114,
+                16.163,
+                16.206,
+                16.119
+              ],
+              "min": 16.082,
+              "p50": 16.193,
+              "p95": 16.257,
+              "max": 16.258,
+              "mean": 16.184,
+              "stdev": 0.053,
+              "cv_pct": 0.327,
+              "nsamples": 18
+            },
+            "mutex contention spin (50 goros × 1000)": {
+              "unit": "ns/op",
+              "n": 500000,
+              "samples": [
+                139.137,
+                133.812,
+                139.643,
+                84.111,
+                139.368,
+                148.68,
+                87.338,
+                101.282,
+                120.415,
+                79.741,
+                132.759,
+                94.178,
+                168.682,
+                137.509,
+                91.519,
+                154.972,
+                100.426,
+                130.646
+              ],
+              "min": 79.741,
+              "p50": 131.703,
+              "p95": 157.028,
+              "max": 168.682,
+              "mean": 121.345,
+              "stdev": 27.085,
+              "cv_pct": 22.32,
+              "nsamples": 18
+            },
+            "mutex contention work (50 goros × 1000)": {
+              "unit": "ns/op",
+              "n": 50000,
+              "samples": [
+                1049.28,
+                995.085,
+                991.183,
+                1042.96,
+                995.598,
+                994.685,
+                1033.07,
+                935.07,
+                1007.84,
+                1016.62,
+                941.3,
+                941.113,
+                991.308,
+                987.284,
+                987.875,
+                944.253,
+                998.361,
+                997.479
+              ],
+              "min": 935.07,
+              "p50": 994.885,
+              "p95": 1043.908,
+              "max": 1049.28,
+              "mean": 991.687,
+              "stdev": 33.643,
+              "cv_pct": 3.392,
+              "nsamples": 18
+            },
+            "mutex contention (50 goros × 100 iter)": {
+              "unit": "ns/op",
+              "n": 50000,
+              "samples": [
+                90.467,
+                102.168,
+                98.481,
+                74.112,
+                97.235,
+                97.266,
+                132.607,
+                73.735,
+                91.096,
+                82.121,
+                86.174,
+                99.542,
+                98.224,
+                119.952,
+                89.892,
+                96.418,
+                87.815,
+                85.415
+              ],
+              "min": 73.735,
+              "p50": 93.757,
+              "p95": 121.85,
+              "max": 132.607,
+              "mean": 94.596,
+              "stdev": 14.304,
+              "cv_pct": 15.121,
+              "nsamples": 18
+            },
+            "chan ping-pong (unbuffered, 2 goros)": {
+              "unit": "ns/op",
+              "n": 50000,
+              "samples": [
+                183.026,
+                176.676,
+                384.812,
+                178.556,
+                188.134,
+                169.662,
+                231.324,
+                177.313,
+                204.637,
+                181.574,
+                208.609,
+                167.252,
+                196.716,
+                171.955,
+                198.403,
+                200.414,
+                179.287,
+                177.185
+              ],
+              "min": 167.252,
+              "p50": 182.3,
+              "p95": 254.347,
+              "max": 384.812,
+              "mean": 198.641,
+              "stdev": 49.246,
+              "cv_pct": 24.792,
+              "nsamples": 18
+            },
+            "local fanout spawn+exit": {
+              "unit": "ns/op",
+              "n": 10000,
+              "samples": [
+                1493.09,
+                1424.22,
+                1002.15,
+                1410.99,
+                1450.14,
+                1317.79,
+                1455.43,
+                1082.97,
+                1451.15,
+                1412.43,
+                1447.73,
+                1409.42,
+                1465.57,
+                1440.33,
+                1494.63,
+                1045.52,
+                1442.09,
+                1465.8
+              ],
+              "min": 1002.15,
+              "p50": 1441.21,
+              "p95": 1493.321,
+              "max": 1494.63,
+              "mean": 1372.858,
+              "stdev": 156.999,
+              "cv_pct": 11.436,
+              "nsamples": 18
+            },
+            "rwlock read (single goro)": {
+              "unit": "ns/op",
+              "n": 1000000,
+              "samples": [
+                13.247,
+                13.376,
+                13.201,
+                13.289,
+                13.279,
+                13.304,
+                13.755,
+                13.336,
+                13.265,
+                13.409,
+                13.407,
+                13.319,
+                13.157,
+                13.239,
+                13.181,
+                13.171,
+                13.188,
+                13.255
+              ],
+              "min": 13.157,
+              "p50": 13.272,
+              "p95": 13.461,
+              "max": 13.755,
+              "mean": 13.299,
+              "stdev": 0.138,
+              "cv_pct": 1.035,
+              "nsamples": 18
+            },
+            "rwlock read (4 goros, multi-vcpu)": {
+              "unit": "ns/op",
+              "n": 2000000,
+              "samples": [
+                39.354,
+                41.261,
+                36.39,
+                40.195,
+                34.906,
+                40.9,
+                41.959,
+                38.485,
+                41.049,
+                42.687,
+                42.407,
+                43.547,
+                39.712,
+                36.099,
+                39.319,
+                36.373,
+                39.212,
+                36.696
+              ],
+              "min": 34.906,
+              "p50": 39.533,
+              "p95": 42.816,
+              "max": 43.547,
+              "mean": 39.475,
+              "stdev": 2.546,
+              "cv_pct": 6.449,
+              "nsamples": 18
+            },
+            "rwlock read (4 goros + writer)": {
+              "unit": "ns/op",
+              "n": 2000000,
+              "samples": [
+                36.976,
+                41.761,
+                36.624,
+                41.337,
+                36.886,
+                41.506,
+                27.674,
+                42.565,
+                42.272,
+                43.955,
+                43.371,
+                43.311,
+                40.436,
+                37.165,
+                40.503,
+                37.312,
+                39.833,
+                36.887
+              ],
+              "min": 27.674,
+              "p50": 40.47,
+              "p95": 43.458,
+              "max": 43.955,
+              "mean": 39.465,
+              "stdev": 3.906,
+              "cv_pct": 9.896,
+              "nsamples": 18
+            },
+            "rwlock write (4 goros, multi-vcpu)": {
+              "unit": "ns/op",
+              "n": 800000,
+              "samples": [
+                67.461,
+                102.994,
+                103.016,
+                76.904,
+                103.134,
+                103.684,
+                69.694,
+                92.218,
+                88.155,
+                91.784,
+                87.771,
+                68.849,
+                91.182,
+                99.065,
+                95.471,
+                71.51,
+                63.279,
+                66.575
+              ],
+              "min": 63.279,
+              "p50": 89.668,
+              "p95": 103.217,
+              "max": 103.684,
+              "mean": 85.708,
+              "stdev": 14.633,
+              "cv_pct": 17.073,
+              "nsamples": 18
+            },
+            "select wait (1 channel)": {
+              "unit": "ns/op",
+              "n": 200000,
+              "samples": [
+                9.968,
+                11.177,
+                9.884,
+                10.119,
+                9.699,
+                9.599,
+                9.597,
+                10.139,
+                9.666,
+                9.639,
+                9.512,
+                9.619,
+                9.01,
+                11.074,
+                8.815,
+                10.786,
+                9.027,
+                11.051
+              ],
+              "min": 8.815,
+              "p50": 9.682,
+              "p95": 11.089,
+              "max": 11.177,
+              "mean": 9.91,
+              "stdev": 0.708,
+              "cv_pct": 7.149,
+              "nsamples": 18
+            },
+            "select wait (4 channels)": {
+              "unit": "ns/op",
+              "n": 200000,
+              "samples": [
+                26.264,
+                27.149,
+                26.512,
+                26.297,
+                26.482,
+                26.234,
+                26.289,
+                26.226,
+                26.259,
+                26.2,
+                27.853,
+                26.812,
+                25.306,
+                27.652,
+                25.231,
+                27.67,
+                26.276,
+                28.221
+              ],
+              "min": 25.231,
+              "p50": 26.293,
+              "p95": 27.909,
+              "max": 28.221,
+              "mean": 26.607,
+              "stdev": 0.816,
+              "cv_pct": 3.067,
+              "nsamples": 18
+            },
+            "select wait (16 channels)": {
+              "unit": "ns/op",
+              "n": 100000,
+              "samples": [
+                91.908,
+                92.49,
+                93.184,
+                94.131,
+                92.272,
+                91.964,
+                93.839,
+                93.01,
+                94.015,
+                92.766,
+                93.757,
+                92.294,
+                93.72,
+                92.248,
+                93.026,
+                92.412,
+                93.824,
+                96.128
+              ],
+              "min": 91.908,
+              "p50": 93.018,
+              "p95": 94.43,
+              "max": 96.128,
+              "mean": 93.166,
+              "stdev": 1.047,
+              "cv_pct": 1.124,
+              "nsamples": 18
+            },
+            "select wait (64 channels)": {
+              "unit": "ns/op",
+              "n": 20000,
+              "samples": [
+                363.111,
+                360.517,
+                354.997,
+                360.892,
+                361.787,
+                357.905,
+                362.994,
+                362.515,
+                373.519,
+                363.533,
+                364.048,
+                361.011,
+                360.252,
+                354.508,
+                368.197,
+                357.24,
+                356.458,
+                358.373
+              ],
+              "min": 354.508,
+              "p50": 360.952,
+              "p95": 368.995,
+              "max": 373.519,
+              "mean": 361.214,
+              "stdev": 4.634,
+              "cv_pct": 1.283,
+              "nsamples": 18
+            }
+          },
+          "bench_ui_io": {
+            "ui_Read (always-available data)": {
+              "unit": "ns/op",
+              "n": 6554,
+              "samples": [
+                744.525,
+                733.882,
+                711.215,
+                736.454,
+                775.668,
+                726.427,
+                735.396,
+                728.448,
+                741.107,
+                722.857,
+                718.546,
+                750.127,
+                735.813,
+                714.603,
+                708.164,
+                749.012,
+                704.189,
+                715.825
+              ],
+              "min": 704.189,
+              "p50": 731.165,
+              "p95": 753.958,
+              "max": 775.668,
+              "mean": 730.681,
+              "stdev": 17.87,
+              "cv_pct": 2.446,
+              "nsamples": 18,
+              "extra": {
+                "prefilled": {
+                  "value": 6554,
+                  "unit": "chunks"
+                }
+              }
+            },
+            "POSIX read() (data not ready, park)": {
+              "unit": "ns/op",
+              "n": 2000,
+              "samples": [
+                6528.34,
+                7493.29,
+                5662.81,
+                6365.69,
+                6388.29,
+                6285.86,
+                6352.09,
+                6385.08,
+                6862.68,
+                7339.7,
+                6505.78,
+                6546.98,
+                6197.29,
+                6458.68,
+                6405.61,
+                6500.05,
+                6619.99,
+                6496.45
+              ],
+              "min": 5662.81,
+              "p50": 6477.565,
+              "p95": 7362.738,
+              "max": 7493.29,
+              "mean": 6521.926,
+              "stdev": 401.955,
+              "cv_pct": 6.163,
+              "nsamples": 18
+            },
+            "io_uring enter floor (1 SQE)": {
+              "unit": "ns/op",
+              "n": 20000,
+              "samples": [
+                160.422,
+                160.727,
+                161.251,
+                159.594,
+                160.017,
+                159.816,
+                160.411,
+                159.893,
+                158.917,
+                159.823,
+                160.387,
+                161.153,
+                159.126,
+                159.502,
+                160.372,
+                161.788,
+                162.178,
+                162.935
+              ],
+              "min": 158.917,
+              "p50": 160.38,
+              "p95": 162.292,
+              "max": 162.935,
+              "mean": 160.462,
+              "stdev": 1.063,
+              "cv_pct": 0.662,
+              "nsamples": 18,
+              "extra": {
+                "sqe_per_enter": {
+                  "value": 1,
+                  "unit": "count"
+                }
+              }
+            },
+            "io_uring enter floor (8 SQE)": {
+              "unit": "ns/op",
+              "n": 20000,
+              "samples": [
+                34.794,
+                34.299,
+                34.924,
+                34.904,
+                34.243,
+                34.461,
+                35.247,
+                34.268,
+                35.472,
+                35.128,
+                34.263,
+                35.269,
+                35.61,
+                35.746,
+                34.14,
+                35.047,
+                34.754,
+                34.101
+              ],
+              "min": 34.101,
+              "p50": 34.849,
+              "p95": 35.63,
+              "max": 35.746,
+              "mean": 34.815,
+              "stdev": 0.531,
+              "cv_pct": 1.524,
+              "nsamples": 18,
+              "extra": {
+                "sqe_per_enter": {
+                  "value": 8,
+                  "unit": "count"
+                }
+              }
+            },
+            "io_uring enter floor (64 SQE)": {
+              "unit": "ns/op",
+              "n": 20032,
+              "samples": [
+                19.159,
+                20.003,
+                19.105,
+                20.078,
+                19.461,
+                20.146,
+                20.604,
+                20.97,
+                19.216,
+                20.298,
+                19.265,
+                19.85,
+                20.166,
+                20.044,
+                20.643,
+                19.257,
+                19.322,
+                20.047
+              ],
+              "min": 19.105,
+              "p50": 20.023,
+              "p95": 20.692,
+              "max": 20.97,
+              "mean": 19.869,
+              "stdev": 0.571,
+              "cv_pct": 2.875,
+              "nsamples": 18,
+              "extra": {
+                "sqe_per_enter": {
+                  "value": 64,
+                  "unit": "count"
+                }
+              }
+            }
+          },
+          "bench_stack": {
+            "goroutine spawn+exit (warm, MADV_FREE)": {
+              "unit": "ns/op",
+              "n": 50000,
+              "samples": [
+                2400.66,
+                2505.89,
+                2571.44,
+                2595.88,
+                2608.1,
+                2461.53,
+                2397.38,
+                2422.27,
+                2490.64,
+                2427.32,
+                2419.39,
+                2495.35,
+                2426.41,
+                2482.27,
+                2537.22,
+                2494.86,
+                2472.19,
+                2435.33
+              ],
+              "min": 2397.38,
+              "p50": 2477.23,
+              "p95": 2597.713,
+              "max": 2608.1,
+              "mean": 2480.229,
+              "stdev": 64.575,
+              "cv_pct": 2.604,
+              "nsamples": 18
+            },
+            "goroutine spawn+exit (warm, MADV_DONTNEED)": {
+              "unit": "ns/op",
+              "n": 50000,
+              "samples": [
+                2818.1,
+                2831.82,
+                2744.32,
+                2918.07,
+                2962.53,
+                2887.7,
+                2866.27,
+                2859.57,
+                2899.91,
+                2803.3,
+                2722.5,
+                2820.17,
+                2687.53,
+                2882.33,
+                2813.41,
+                2851.24,
+                2889.2,
+                2773.45
+              ],
+              "min": 2687.53,
+              "p50": 2841.53,
+              "p95": 2924.739,
+              "max": 2962.53,
+              "mean": 2835.079,
+              "stdev": 70.951,
+              "cv_pct": 2.503,
+              "nsamples": 18
+            },
+            "goroutine spawn+exit (warm, keep pages)": {
+              "unit": "ns/op",
+              "n": 50000,
+              "samples": [
+                759.833,
+                637.782,
+                743.226,
+                672.487,
+                708.07,
+                516.892,
+                757.886,
+                658.504,
+                664.904,
+                709.105,
+                795.863,
+                654.041,
+                672.97,
+                762.874,
+                658.829,
+                709.873,
+                724.667,
+                720.948
+              ],
+              "min": 516.892,
+              "p50": 708.588,
+              "p95": 767.822,
+              "max": 795.863,
+              "mean": 696.042,
+              "stdev": 63.524,
+              "cv_pct": 9.127,
+              "nsamples": 18
+            },
+            "goroutine spawn+exit (warm, 4MB budget)": {
+              "unit": "ns/op",
+              "n": 50000,
+              "samples": [
+                2680.89,
+                2732.9,
+                2612.03,
+                2752.35,
+                2686.27,
+                2661.72,
+                2689.33,
+                2732.04,
+                2600.23,
+                2538.33,
+                2636.37,
+                2584.11,
+                2715.1,
+                2629.93,
+                2602.14,
+                2776.65,
+                2574.3,
+                2589.64
+              ],
+              "min": 2538.33,
+              "p50": 2649.045,
+              "p95": 2755.995,
+              "max": 2776.65,
+              "mean": 2655.241,
+              "stdev": 68.941,
+              "cv_pct": 2.596,
+              "nsamples": 18
+            },
+            "stack pool RSS (MADV_FREE)": {
+              "unit": "MiB",
+              "n": 50000,
+              "samples": [
+                20.059,
+                14.762,
+                16.363,
+                15.754,
+                15.762,
+                17.109,
+                16.039,
+                15.316,
+                15.074,
+                14.594,
+                16.738,
+                16.93,
+                14.301,
+                15.356,
+                16.273,
+                17.449,
+                18.18,
+                16.246
+              ],
+              "min": 14.301,
+              "p50": 16.143,
+              "p95": 18.462,
+              "max": 20.059,
+              "mean": 16.239,
+              "stdev": 1.403,
+              "cv_pct": 8.639,
+              "nsamples": 18,
+              "extra": {
+                "spawn": {
+                  "value": 2372.92,
+                  "unit": "ns/op"
+                }
+              }
+            },
+            "stack pool RSS (MADV_DONTNEED)": {
+              "unit": "MiB",
+              "n": 50000,
+              "samples": [
+                3.012,
+                3.188,
+                3.66,
+                3.531,
+                3.742,
+                3.617,
+                3.906,
+                3.844,
+                3.844,
+                4.012,
+                4.086,
+                3.93,
+                4.035,
+                3.328,
+                3.762,
+                3.371,
+                3.617,
+                3.242
+              ],
+              "min": 3.012,
+              "p50": 3.701,
+              "p95": 4.043,
+              "max": 4.086,
+              "mean": 3.651,
+              "stdev": 0.316,
+              "cv_pct": 8.646,
+              "nsamples": 18,
+              "extra": {
+                "spawn": {
+                  "value": 2892.29,
+                  "unit": "ns/op"
+                }
+              }
+            },
+            "stack pool RSS (keep pages)": {
+              "unit": "MiB",
+              "n": 50000,
+              "samples": [
+                22.18,
+                24.945,
+                25.242,
+                23.422,
+                26.402,
+                20.414,
+                21.047,
+                26.246,
+                19.606,
+                24.867,
+                25.883,
+                20.848,
+                20.895,
+                21.047,
+                20.027,
+                20.977,
+                23.191,
+                19.481
+              ],
+              "min": 19.481,
+              "p50": 21.613,
+              "p95": 26.27,
+              "max": 26.402,
+              "mean": 22.595,
+              "stdev": 2.436,
+              "cv_pct": 10.781,
+              "nsamples": 18,
+              "extra": {
+                "spawn": {
+                  "value": 716.64,
+                  "unit": "ns/op"
+                }
+              }
+            },
+            "VMA count (1000 goroutines)": {
+              "unit": "count",
+              "n": 1000,
+              "samples": [
+                2022,
+                2022,
+                2022,
+                2022,
+                2022,
+                2022,
+                2022,
+                2022,
+                2022,
+                2022,
+                2022,
+                2022,
+                2022,
+                2022,
+                2022,
+                2022,
+                2022,
+                2022
+              ],
+              "min": 2022,
+              "p50": 2022,
+              "p95": 2022,
+              "max": 2022,
+              "mean": 2022,
+              "stdev": 0,
+              "cv_pct": 0,
+              "nsamples": 18,
+              "extra": {
+                "vma_delta": {
+                  "value": 1488,
+                  "unit": "count"
+                },
+                "rss": {
+                  "value": 7.14844,
+                  "unit": "MiB"
+                }
+              }
+            },
+            "goroutine spawn+exit (deep stack, 64KB)": {
+              "unit": "ns/op",
+              "n": 25000,
+              "samples": [
+                10010.5,
+                9990.82,
+                10773.4,
+                10062.2,
+                9624.38,
+                10382.9,
+                10601.5,
+                11254.9,
+                9958.01,
+                10713.6,
+                10624.8,
+                9758.09,
+                9862.48,
+                10474.5,
+                10004.9,
+                9984.59,
+                9736.31,
+                9790.83
+              ],
+              "min": 9624.38,
+              "p50": 10007.7,
+              "p95": 10845.625,
+              "max": 11254.9,
+              "mean": 10200.484,
+              "stdev": 448.559,
+              "cv_pct": 4.397,
+              "nsamples": 18
+            },
+            "stack pool RSS (deep stack, keep pages)": {
+              "unit": "MiB",
+              "n": 25000,
+              "samples": [
+                292.355,
+                203.359,
+                298.965,
+                241.379,
+                227.176,
+                257.137,
+                260.547,
+                204.547,
+                282.031,
+                248.703,
+                214.742,
+                248.914,
+                301.457,
+                289.152,
+                223.199,
+                234.027,
+                245.77,
+                219.332
+              ],
+              "min": 203.359,
+              "p50": 247.237,
+              "p95": 299.339,
+              "max": 301.457,
+              "mean": 249.6,
+              "stdev": 32.15,
+              "cv_pct": 12.881,
+              "nsamples": 18,
+              "extra": {
+                "spawn": {
+                  "value": 3225.48,
+                  "unit": "ns/op"
+                }
+              }
+            },
+            "stack pool RSS (deep stack, DONTNEED)": {
+              "unit": "MiB",
+              "n": 25000,
+              "samples": [
+                3.297,
+                3.391,
+                3.391,
+                3.512,
+                3.324,
+                3.102,
+                3.941,
+                3.969,
+                3.984,
+                3.941,
+                3.941,
+                3.941,
+                4.047,
+                4.031,
+                4.031,
+                4.031,
+                4.031,
+                4.031
+              ],
+              "min": 3.102,
+              "p50": 3.941,
+              "p95": 4.034,
+              "max": 4.047,
+              "mean": 3.774,
+              "stdev": 0.329,
+              "cv_pct": 8.727,
+              "nsamples": 18,
+              "extra": {
+                "spawn": {
+                  "value": 11133.3,
+                  "unit": "ns/op"
+                }
+              }
+            }
+          },
+          "bench_idle": {
+            "idle CPU (UI_IDLE_WAIT_MS=10)": {
+              "unit": "ms CPU",
+              "n": 1000,
+              "samples": [
+                9.645,
+                9.787,
+                11.3
+              ],
+              "min": 9.645,
+              "p50": 9.787,
+              "p95": 11.149,
+              "max": 11.3,
+              "mean": 10.244,
+              "stdev": 0.918,
+              "cv_pct": 8.957,
+              "nsamples": 3,
+              "extra": {
+                "window": {
+                  "value": 1000,
+                  "unit": "ms"
+                },
+                "idle_wait": {
+                  "value": 10,
+                  "unit": "ms"
+                },
+                "nvcpus": {
+                  "value": 4,
+                  "unit": "count"
+                }
+              }
+            },
+            "idle CPU (UI_IDLE_WAIT_MS=100)": {
+              "unit": "ms CPU",
+              "n": 1000,
+              "samples": [
+                1.856,
+                1.938,
+                1.725
+              ],
+              "min": 1.725,
+              "p50": 1.856,
+              "p95": 1.93,
+              "max": 1.938,
+              "mean": 1.84,
+              "stdev": 0.108,
+              "cv_pct": 5.854,
+              "nsamples": 3,
+              "extra": {
+                "window": {
+                  "value": 1000,
+                  "unit": "ms"
+                },
+                "idle_wait": {
+                  "value": 100,
+                  "unit": "ms"
+                },
+                "nvcpus": {
+                  "value": 4,
+                  "unit": "count"
+                }
+              }
+            },
+            "idle CPU (UI_IDLE_WAIT_MS=1000)": {
+              "unit": "ms CPU",
+              "n": 1000,
+              "samples": [
+                0.545,
+                0.57,
+                0.634
+              ],
+              "min": 0.545,
+              "p50": 0.57,
+              "p95": 0.628,
+              "max": 0.634,
+              "mean": 0.583,
+              "stdev": 0.046,
+              "cv_pct": 7.854,
+              "nsamples": 3,
+              "extra": {
+                "window": {
+                  "value": 1000,
+                  "unit": "ms"
+                },
+                "idle_wait": {
+                  "value": 1000,
+                  "unit": "ms"
+                },
+                "nvcpus": {
+                  "value": 4,
+                  "unit": "count"
+                }
+              }
+            }
+          }
+        }
+      },
+      "verdict": {
+        "bench_ui": {
+          "goroutine spawn+exit": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.27503907680078155,
+            "delta_pct": -0.7658024974869811,
+            "base_p50": 3636.0550000000003,
+            "head_p50": 3608.21,
+            "base_cv_pct": 3.0026762849166015,
+            "head_cv_pct": 2.1978356221076587,
+            "n": 36
+          },
+          "goroutine spawn+exit (warm, pool hit)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.8124323058285332,
+            "delta_pct": -2.6096181659146644,
+            "base_p50": 577.345,
+            "head_p50": 562.2785,
+            "base_cv_pct": 6.145180058183073,
+            "head_cv_pct": 4.868735523427837,
+            "n": 36
+          },
+          "chan send+recv (buffered)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.07909817615652792,
+            "delta_pct": -1.6176816228466104,
+            "base_p50": 17.231450000000002,
+            "head_p50": 16.9527,
+            "base_cv_pct": 3.0956494526899436,
+            "head_cv_pct": 2.5348532020938617,
+            "n": 36
+          },
+          "chan try_send+recv": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.715974703590526,
+            "delta_pct": -0.14715817300631656,
+            "base_p50": 17.0225,
+            "head_p50": 16.99745,
+            "base_cv_pct": 3.27887562695225,
+            "head_cv_pct": 2.5252729741255497,
+            "n": 36
+          },
+          "mutex lock+unlock (uncontested)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.4570877019857451,
+            "delta_pct": -0.19377783181603409,
+            "base_p50": 13.1594,
+            "head_p50": 13.1339,
+            "base_cv_pct": 0.4417048431239392,
+            "head_cv_pct": 1.1418763216208676,
+            "n": 36
+          },
+          "mutex trylock+unlock (uncontested)": {
+            "verdict": "negligible",
+            "significant": true,
+            "material": false,
+            "p": 0.029000014110361683,
+            "delta_pct": -0.24639668012893756,
+            "base_p50": 16.1934,
+            "head_p50": 16.1535,
+            "base_cv_pct": 0.3272630126932778,
+            "head_cv_pct": 0.4090359962013561,
+            "n": 36
+          },
+          "mutex contention spin (50 goros × 1000)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": true,
+            "p": 0.2891933007495071,
+            "delta_pct": -15.597274159564162,
+            "base_p50": 131.7025,
+            "head_p50": 111.1605,
+            "base_cv_pct": 22.320262334652085,
+            "head_cv_pct": 29.675337525423984,
+            "n": 36
+          },
+          "mutex contention work (50 goros × 1000)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.38426671825927405,
+            "delta_pct": 0.36577091824683355,
+            "base_p50": 994.885,
+            "head_p50": 998.524,
+            "base_cv_pct": 3.392485472076815,
+            "head_cv_pct": 12.01108259951137,
+            "n": 36
+          },
+          "mutex contention (50 goros × 100 iter)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": true,
+            "p": 0.2481688090102876,
+            "delta_pct": 5.150498176401879,
+            "base_p50": 93.75694999999999,
+            "head_p50": 98.58590000000001,
+            "base_cv_pct": 15.121218268260902,
+            "head_cv_pct": 21.756181155464187,
+            "n": 36
+          },
+          "chan ping-pong (unbuffered, 2 goros)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": true,
+            "p": 0.5798008895737141,
+            "delta_pct": 7.362314865606133,
+            "base_p50": 182.3,
+            "head_p50": 195.7215,
+            "base_cv_pct": 24.79164869325009,
+            "head_cv_pct": 8.224041412232367,
+            "n": 36
+          },
+          "local fanout spawn+exit": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.11009878429723474,
+            "delta_pct": -1.7814891653541247,
+            "base_p50": 1441.21,
+            "head_p50": 1415.5349999999999,
+            "base_cv_pct": 11.43590518318637,
+            "head_cv_pct": 14.893166310542489,
+            "n": 36
+          },
+          "rwlock read (single goro)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.8618558039353479,
+            "delta_pct": 0.036166637783597286,
+            "base_p50": 13.271899999999999,
+            "head_p50": 13.2767,
+            "base_cv_pct": 1.0350276155297837,
+            "head_cv_pct": 0.8516025617257595,
+            "n": 36
+          },
+          "rwlock read (4 goros, multi-vcpu)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.40179313455667565,
+            "delta_pct": 1.4868760047100464,
+            "base_p50": 39.53255,
+            "head_p50": 40.12035,
+            "base_cv_pct": 6.448614727597421,
+            "head_cv_pct": 8.659058048303956,
+            "n": 36
+          },
+          "rwlock read (4 goros + writer)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.23544575092485376,
+            "delta_pct": 2.853623460572865,
+            "base_p50": 40.4696,
+            "head_p50": 41.624449999999996,
+            "base_cv_pct": 9.896475599377824,
+            "head_cv_pct": 7.728241198757936,
+            "n": 36
+          },
+          "rwlock write (4 goros, multi-vcpu)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.9999999989999999,
+            "delta_pct": 2.6693907775760377,
+            "base_p50": 89.6684,
+            "head_p50": 92.062,
+            "base_cv_pct": 17.073432112431767,
+            "head_cv_pct": 18.646543759274007,
+            "n": 36
+          },
+          "select wait (1 channel)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.07909817615652792,
+            "delta_pct": -2.3101650671190312,
+            "base_p50": 9.682425,
+            "head_p50": 9.458745,
+            "base_cv_pct": 7.14913198356135,
+            "head_cv_pct": 4.644999724337376,
+            "n": 36
+          },
+          "select wait (4 channels)": {
+            "verdict": "negligible",
+            "significant": true,
+            "material": false,
+            "p": 0.0018308598278777843,
+            "delta_pct": -1.834701879960923,
+            "base_p50": 26.293100000000003,
+            "head_p50": 25.810699999999997,
+            "base_cv_pct": 3.0671654298701307,
+            "head_cv_pct": 2.0432484204752517,
+            "n": 36
+          },
+          "select wait (16 channels)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.07909817615652792,
+            "delta_pct": -1.0208809721160637,
+            "base_p50": 93.0177,
+            "head_p50": 92.0681,
+            "base_cv_pct": 1.1235718797666168,
+            "head_cv_pct": 1.3923820207680897,
+            "n": 36
+          },
+          "select wait (64 channels)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.49635877029693254,
+            "delta_pct": -0.2963001954556235,
+            "base_p50": 360.9515,
+            "head_p50": 359.882,
+            "base_cv_pct": 1.2827649246730242,
+            "head_cv_pct": 0.9515292780537122,
+            "n": 36
+          }
+        },
+        "bench_ui_io": {
+          "ui_Read (always-available data)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.7879851376807534,
+            "delta_pct": -0.3723509741303219,
+            "base_p50": 731.165,
+            "head_p50": 728.4425,
+            "base_cv_pct": 2.4457315189042617,
+            "head_cv_pct": 1.8249491025117126,
+            "n": 36
+          },
+          "POSIX read() (data not ready, park)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.7637450651149031,
+            "delta_pct": -0.26128645563572395,
+            "base_p50": 6477.5650000000005,
+            "head_p50": 6460.64,
+            "base_cv_pct": 6.163135105603739,
+            "head_cv_pct": 3.3373679532024263,
+            "n": 36
+          },
+          "io_uring enter floor (1 SQE)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.9873784836879564,
+            "delta_pct": -0.10537506352121756,
+            "base_p50": 160.3795,
+            "head_p50": 160.2105,
+            "base_cv_pct": 0.6623200644184971,
+            "head_cv_pct": 0.7124396616678889,
+            "n": 36
+          },
+          "io_uring enter floor (8 SQE)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.0905191784348145,
+            "delta_pct": 0.7214042417651273,
+            "base_p50": 34.848699999999994,
+            "head_p50": 35.1001,
+            "base_cv_pct": 1.524060397652412,
+            "head_cv_pct": 1.6972245788100804,
+            "n": 36
+          },
+          "io_uring enter floor (64 SQE)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.051681768889761504,
+            "delta_pct": -2.611957070013415,
+            "base_p50": 20.0233,
+            "head_p50": 19.500300000000003,
+            "base_cv_pct": 2.8745746144094935,
+            "head_cv_pct": 1.4588601752287176,
+            "n": 36
+          }
+        },
+        "bench_stack": {
+          "goroutine spawn+exit (warm, MADV_FREE)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.9369557333589014,
+            "delta_pct": -0.09829527334966658,
+            "base_p50": 2477.23,
+            "head_p50": 2474.795,
+            "base_cv_pct": 2.6035963089351517,
+            "head_cv_pct": 2.694063955694775,
+            "n": 36
+          },
+          "goroutine spawn+exit (warm, MADV_DONTNEED)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.5583364525967909,
+            "delta_pct": -1.2697384859565068,
+            "base_p50": 2841.5299999999997,
+            "head_p50": 2805.45,
+            "base_cv_pct": 2.502623514547344,
+            "head_cv_pct": 2.683343205381253,
+            "n": 36
+          },
+          "goroutine spawn+exit (warm, keep pages)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.7879851376807534,
+            "delta_pct": -0.7298322366680403,
+            "base_p50": 708.5875000000001,
+            "head_p50": 703.4159999999999,
+            "base_cv_pct": 9.126525960873002,
+            "head_cv_pct": 5.455271423019571,
+            "n": 36
+          },
+          "goroutine spawn+exit (warm, 4MB budget)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.2891933007495071,
+            "delta_pct": 1.2421457544133734,
+            "base_p50": 2649.045,
+            "head_p50": 2681.95,
+            "base_cv_pct": 2.596430066721532,
+            "head_cv_pct": 2.446278202788129,
+            "n": 36
+          },
+          "stack pool RSS (MADV_FREE)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.8124323058285332,
+            "delta_pct": -1.1736027653538001,
+            "base_p50": 16.1426,
+            "head_p50": 15.953149999999999,
+            "base_cv_pct": 8.639001895794134,
+            "head_cv_pct": 7.0148250041735585,
+            "n": 36
+          },
+          "stack pool RSS (MADV_DONTNEED)": {
+            "verdict": "improved",
+            "significant": true,
+            "material": true,
+            "p": 0.0005222634606916188,
+            "delta_pct": -14.881355245293731,
+            "base_p50": 3.701175,
+            "head_p50": 3.15039,
+            "base_cv_pct": 8.646288322655137,
+            "head_cv_pct": 8.035077048197532,
+            "n": 36
+          },
+          "stack pool RSS (keep pages)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.5165214848344726,
+            "delta_pct": -2.0061721254968097,
+            "base_p50": 21.613300000000002,
+            "head_p50": 21.1797,
+            "base_cv_pct": 10.781246466950147,
+            "head_cv_pct": 10.264923011159837,
+            "n": 36
+          },
+          "VMA count (1000 goroutines)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 1,
+            "delta_pct": 0,
+            "base_p50": 2022,
+            "head_p50": 2022,
+            "base_cv_pct": 0,
+            "head_cv_pct": 0,
+            "n": 36
+          },
+          "goroutine spawn+exit (deep stack, 64KB)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.051681768889761504,
+            "delta_pct": 3.992925447405483,
+            "base_p50": 10007.7,
+            "head_p50": 10407.3,
+            "base_cv_pct": 4.397432081867966,
+            "head_cv_pct": 2.643836861327314,
+            "n": 36
+          },
+          "stack pool RSS (deep stack, keep pages)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.7397343790510202,
+            "delta_pct": 0.32377905365913656,
+            "base_p50": 247.2365,
+            "head_p50": 248.03699999999998,
+            "base_cv_pct": 12.880765163950691,
+            "head_cv_pct": 16.947054452004508,
+            "n": 36
+          },
+          "stack pool RSS (deep stack, DONTNEED)": {
+            "verdict": "improved",
+            "significant": true,
+            "material": true,
+            "p": 4.715866825932835e-7,
+            "delta_pct": -22.943565881245537,
+            "base_p50": 3.94141,
+            "head_p50": 3.03711,
+            "base_cv_pct": 8.727287789344638,
+            "head_cv_pct": 3.0052893628369595,
+            "n": 36
+          }
+        },
+        "bench_idle": {
+          "idle CPU (UI_IDLE_WAIT_MS=10)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": false,
+            "p": 0.9999999989999999,
+            "delta_pct": 4.7697768368913005,
+            "base_p50": 9.78746,
+            "head_p50": 10.2543,
+            "base_cv_pct": 8.956847736168983,
+            "head_cv_pct": 7.576927490165026,
+            "n": 6
+          },
+          "idle CPU (UI_IDLE_WAIT_MS=100)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": true,
+            "p": 0.08085551657571322,
+            "delta_pct": 11.264676246975846,
+            "base_p50": 1.85589,
+            "head_p50": 2.06495,
+            "base_cv_pct": 5.853814198288118,
+            "head_cv_pct": 0.8693002142688369,
+            "n": 6
+          },
+          "idle CPU (UI_IDLE_WAIT_MS=1000)": {
+            "verdict": "unchanged",
+            "significant": false,
+            "material": true,
+            "p": 0.19043039829489095,
+            "delta_pct": 11.556045620444355,
+            "base_p50": 0.570446,
+            "head_p50": 0.636367,
+            "base_cv_pct": 7.854410525782559,
+            "head_cv_pct": 11.722126039854624,
+            "n": 6
+          }
+        }
+      },
+      "syscalls": {
+        "bench_ui": {
+          "goroutine spawn+exit": {
+            "total": {
+              "mprotect": 2004,
+              "munmap": 37,
+              "ppoll": 3,
+              "mmap": 39,
+              "futex": 1,
+              "write": 17,
+              "clone3": 3,
+              "read": 10,
+              "madvise": 3
+            },
+            "per_op": {
+              "mprotect": 1.002,
+              "munmap": 0.019,
+              "ppoll": 0.002,
+              "mmap": 0.02,
+              "futex": 0.001,
+              "write": 0.009,
+              "clone3": 0.002,
+              "read": 0.005,
+              "madvise": 0.002
+            },
+            "ops": 2000
+          },
+          "goroutine spawn+exit (warm, pool hit)": {
+            "total": {
+              "ppoll": 629,
+              "mprotect": 2128,
+              "read": 1303,
+              "munmap": 39,
+              "write": 784,
+              "mmap": 40,
+              "clone3": 3,
+              "futex": 2,
+              "madvise": 3
+            },
+            "per_op": {
+              "ppoll": 0.351,
+              "mprotect": 1.188,
+              "read": 0.727,
+              "munmap": 0.022,
+              "write": 0.438,
+              "mmap": 0.022,
+              "clone3": 0.002,
+              "futex": 0.001,
+              "madvise": 0.002
+            },
+            "ops": 1792
+          },
+          "chan send+recv (buffered)": {
+            "total": {
+              "read": 3,
+              "write": 10,
+              "mmap": 5,
+              "mprotect": 257,
+              "munmap": 5
+            },
+            "per_op": {
+              "read": 0.002,
+              "write": 0.005,
+              "mmap": 0.003,
+              "mprotect": 0.129,
+              "munmap": 0.003
+            },
+            "ops": 2000
+          },
+          "chan try_send+recv": {
+            "total": {
+              "mprotect": 257,
+              "munmap": 5,
+              "write": 10,
+              "read": 3,
+              "mmap": 5
+            },
+            "per_op": {
+              "mprotect": 0.129,
+              "munmap": 0.003,
+              "write": 0.005,
+              "read": 0.002,
+              "mmap": 0.003
+            },
+            "ops": 2000
+          },
+          "mutex lock+unlock (uncontested)": {
+            "total": {
+              "mprotect": 257,
+              "munmap": 5,
+              "write": 10,
+              "mmap": 5,
+              "read": 3
+            },
+            "per_op": {
+              "mprotect": 0.129,
+              "munmap": 0.003,
+              "write": 0.005,
+              "mmap": 0.003,
+              "read": 0.002
+            },
+            "ops": 2000
+          },
+          "mutex trylock+unlock (uncontested)": {
+            "total": {
+              "mprotect": 257,
+              "munmap": 5,
+              "write": 10,
+              "mmap": 5,
+              "read": 3
+            },
+            "per_op": {
+              "mprotect": 0.129,
+              "munmap": 0.003,
+              "write": 0.005,
+              "mmap": 0.003,
+              "read": 0.002
+            },
+            "ops": 2000
+          },
+          "mutex contention spin (50 goros × 1000)": {
+            "total": {
+              "mprotect": 260,
+              "ppoll": 2,
+              "mmap": 11,
+              "clone3": 3,
+              "munmap": 9,
+              "write": 21,
+              "futex": 2,
+              "read": 9,
+              "madvise": 3
+            },
+            "per_op": {
+              "mprotect": 0.005,
+              "ppoll": 0,
+              "mmap": 0,
+              "clone3": 0,
+              "munmap": 0,
+              "write": 0,
+              "futex": 0,
+              "read": 0,
+              "madvise": 0
+            },
+            "ops": 50000
+          },
+          "mutex contention work (50 goros × 1000)": {
+            "total": {
+              "ppoll": 725,
+              "read": 1458,
+              "write": 814,
+              "mprotect": 260,
+              "munmap": 9,
+              "mmap": 11,
+              "clone3": 3,
+              "madvise": 3,
+              "futex": 1
+            },
+            "per_op": {
+              "ppoll": 0.015,
+              "read": 0.029,
+              "write": 0.016,
+              "mprotect": 0.005,
+              "munmap": 0,
+              "mmap": 0,
+              "clone3": 0,
+              "madvise": 0,
+              "futex": 0
+            },
+            "ops": 50000
+          },
+          "mutex contention (50 goros × 100 iter)": {
+            "total": {
+              "mprotect": 260,
+              "mmap": 11,
+              "clone3": 3,
+              "write": 17,
+              "munmap": 9,
+              "read": 6,
+              "madvise": 3,
+              "futex": 1,
+              "ppoll": 1
+            },
+            "per_op": {
+              "mprotect": 0.052,
+              "mmap": 0.002,
+              "clone3": 0.001,
+              "write": 0.003,
+              "munmap": 0.002,
+              "read": 0.001,
+              "madvise": 0.001,
+              "futex": 0,
+              "ppoll": 0
+            },
+            "ops": 5000
+          },
+          "chan ping-pong (unbuffered, 2 goros)": {
+            "total": {
+              "mprotect": 262,
+              "ppoll": 3,
+              "munmap": 12,
+              "mmap": 13,
+              "clone3": 3,
+              "futex": 1,
+              "read": 9,
+              "write": 17,
+              "madvise": 3
+            },
+            "per_op": {
+              "mprotect": 0.052,
+              "ppoll": 0.001,
+              "munmap": 0.002,
+              "mmap": 0.003,
+              "clone3": 0.001,
+              "futex": 0,
+              "read": 0.002,
+              "write": 0.003,
+              "madvise": 0.001
+            },
+            "ops": 5000
+          },
+          "local fanout spawn+exit": {
+            "total": {
+              "ppoll": 705,
+              "mprotect": 2094,
+              "munmap": 39,
+              "read": 1451,
+              "write": 835,
+              "mmap": 40,
+              "futex": 1,
+              "clone3": 3,
+              "madvise": 3
+            },
+            "per_op": {
+              "ppoll": 0.353,
+              "mprotect": 1.047,
+              "munmap": 0.02,
+              "read": 0.726,
+              "write": 0.418,
+              "mmap": 0.02,
+              "futex": 0.001,
+              "clone3": 0.002,
+              "madvise": 0.002
+            },
+            "ops": 2000
+          },
+          "rwlock read (single goro)": {
+            "total": {
+              "mprotect": 260,
+              "munmap": 9,
+              "write": 17,
+              "clone3": 3,
+              "mmap": 11,
+              "futex": 2,
+              "madvise": 3,
+              "read": 3
+            },
+            "per_op": {
+              "mprotect": 0.13,
+              "munmap": 0.005,
+              "write": 0.009,
+              "clone3": 0.002,
+              "mmap": 0.006,
+              "futex": 0.001,
+              "madvise": 0.002,
+              "read": 0.002
+            },
+            "ops": 2000
+          },
+          "rwlock read (4 goros, multi-vcpu)": {
+            "total": {
+              "mprotect": 260,
+              "munmap": 9,
+              "clone3": 3,
+              "write": 17,
+              "mmap": 11,
+              "futex": 2,
+              "madvise": 3,
+              "read": 3
+            },
+            "per_op": {
+              "mprotect": 0.13,
+              "munmap": 0.005,
+              "clone3": 0.002,
+              "write": 0.009,
+              "mmap": 0.006,
+              "futex": 0.001,
+              "madvise": 0.002,
+              "read": 0.002
+            },
+            "ops": 2000
+          },
+          "rwlock read (4 goros + writer)": {
+            "total": {
+              "mprotect": 260,
+              "munmap": 9,
+              "write": 20,
+              "mmap": 11,
+              "read": 15,
+              "madvise": 3,
+              "futex": 2,
+              "ppoll": 6,
+              "clone3": 3
+            },
+            "per_op": {
+              "mprotect": 0.13,
+              "munmap": 0.005,
+              "write": 0.01,
+              "mmap": 0.006,
+              "read": 0.008,
+              "madvise": 0.002,
+              "futex": 0.001,
+              "ppoll": 0.003,
+              "clone3": 0.002
+            },
+            "ops": 2000
+          },
+          "rwlock write (4 goros, multi-vcpu)": {
+            "total": {
+              "munmap": 9,
+              "mprotect": 260,
+              "write": 17,
+              "mmap": 11,
+              "clone3": 3,
+              "futex": 2,
+              "madvise": 3,
+              "read": 3
+            },
+            "per_op": {
+              "munmap": 0.005,
+              "mprotect": 0.13,
+              "write": 0.009,
+              "mmap": 0.006,
+              "clone3": 0.002,
+              "futex": 0.001,
+              "madvise": 0.002,
+              "read": 0.002
+            },
+            "ops": 2000
+          },
+          "select wait (1 channel)": {
+            "total": {
+              "munmap": 5,
+              "write": 10,
+              "read": 3,
+              "mmap": 5,
+              "mprotect": 257
+            },
+            "per_op": {
+              "munmap": 0.003,
+              "write": 0.005,
+              "read": 0.002,
+              "mmap": 0.003,
+              "mprotect": 0.129
+            },
+            "ops": 2000
+          },
+          "select wait (4 channels)": {
+            "total": {
+              "mprotect": 257,
+              "munmap": 5,
+              "write": 10,
+              "mmap": 5,
+              "read": 3
+            },
+            "per_op": {
+              "mprotect": 0.129,
+              "munmap": 0.003,
+              "write": 0.005,
+              "mmap": 0.003,
+              "read": 0.002
+            },
+            "ops": 2000
+          },
+          "select wait (16 channels)": {
+            "total": {
+              "mprotect": 257,
+              "munmap": 5,
+              "write": 10,
+              "mmap": 5,
+              "read": 3
+            },
+            "per_op": {
+              "mprotect": 0.129,
+              "munmap": 0.003,
+              "write": 0.005,
+              "mmap": 0.003,
+              "read": 0.002
+            },
+            "ops": 2000
+          },
+          "select wait (64 channels)": {
+            "total": {
+              "mprotect": 257,
+              "write": 10,
+              "mmap": 5,
+              "read": 3,
+              "munmap": 5
+            },
+            "per_op": {
+              "mprotect": 0.129,
+              "write": 0.005,
+              "mmap": 0.003,
+              "read": 0.002,
+              "munmap": 0.003
+            },
+            "ops": 2000
+          }
+        },
+        "bench_ui_io": {
+          "ui_Read (always-available data)": {
+            "total": {
+              "ppoll": 3,
+              "io_uring_enter": 6096,
+              "write": 6116,
+              "munmap": 12,
+              "mprotect": 260,
+              "futex": 1,
+              "mmap": 14,
+              "clone3": 3,
+              "io_uring_setup": 1,
+              "madvise": 3,
+              "read": 9
+            },
+            "per_op": {
+              "ppoll": 0,
+              "io_uring_enter": 1,
+              "write": 1.003,
+              "munmap": 0.002,
+              "mprotect": 0.043,
+              "futex": 0,
+              "mmap": 0.002,
+              "clone3": 0,
+              "io_uring_setup": 0,
+              "madvise": 0,
+              "read": 0.001
+            },
+            "ops": 6096
+          },
+          "POSIX read() (data not ready, park)": {
+            "total": {
+              "futex": 2,
+              "read": 4002,
+              "write": 4010,
+              "clone3": 2,
+              "mprotect": 3,
+              "madvise": 2,
+              "mmap": 2
+            },
+            "per_op": {
+              "futex": 0.001,
+              "read": 2.001,
+              "write": 2.005,
+              "clone3": 0.001,
+              "mprotect": 0.002,
+              "madvise": 0.001,
+              "mmap": 0.001
+            },
+            "ops": 2000
+          },
+          "io_uring enter floor (1 SQE)": {
+            "total": {
+              "io_uring_enter": 2000,
+              "write": 13,
+              "mmap": 3,
+              "munmap": 3,
+              "io_uring_setup": 1,
+              "read": 1,
+              "mprotect": 1
+            },
+            "per_op": {
+              "io_uring_enter": 1,
+              "write": 0.007,
+              "mmap": 0.002,
+              "munmap": 0.002,
+              "io_uring_setup": 0.001,
+              "read": 0.001,
+              "mprotect": 0.001
+            },
+            "ops": 2000
+          },
+          "io_uring enter floor (8 SQE)": {
+            "total": {
+              "io_uring_enter": 250,
+              "write": 13,
+              "munmap": 3,
+              "read": 1,
+              "mmap": 3,
+              "mprotect": 1,
+              "io_uring_setup": 1
+            },
+            "per_op": {
+              "io_uring_enter": 0.125,
+              "write": 0.007,
+              "munmap": 0.002,
+              "read": 0.001,
+              "mmap": 0.002,
+              "mprotect": 0.001,
+              "io_uring_setup": 0.001
+            },
+            "ops": 2000
+          },
+          "io_uring enter floor (64 SQE)": {
+            "total": {
+              "io_uring_enter": 32,
+              "mmap": 3,
+              "write": 13,
+              "io_uring_setup": 1,
+              "munmap": 3,
+              "read": 1,
+              "mprotect": 1
+            },
+            "per_op": {
+              "io_uring_enter": 0.016,
+              "mmap": 0.001,
+              "write": 0.006,
+              "io_uring_setup": 0,
+              "munmap": 0.001,
+              "read": 0,
+              "mprotect": 0
+            },
+            "ops": 2048
+          }
+        },
+        "bench_stack": {
+          "goroutine spawn+exit (warm, MADV_FREE)": {
+            "total": {
+              "madvise": 2052,
+              "ppoll": 38,
+              "mprotect": 696,
+              "munmap": 22,
+              "mmap": 21,
+              "read": 79,
+              "write": 58,
+              "clone3": 3,
+              "futex": 2
+            },
+            "per_op": {
+              "madvise": 1.026,
+              "ppoll": 0.019,
+              "mprotect": 0.348,
+              "munmap": 0.011,
+              "mmap": 0.011,
+              "read": 0.04,
+              "write": 0.029,
+              "clone3": 0.002,
+              "futex": 0.001
+            },
+            "ops": 2000
+          },
+          "goroutine spawn+exit (warm, MADV_DONTNEED)": {
+            "total": {
+              "ppoll": 29,
+              "madvise": 2052,
+              "mprotect": 624,
+              "munmap": 19,
+              "mmap": 19,
+              "write": 52,
+              "read": 62,
+              "futex": 1,
+              "clone3": 3
+            },
+            "per_op": {
+              "ppoll": 0.015,
+              "madvise": 1.026,
+              "mprotect": 0.312,
+              "munmap": 0.01,
+              "mmap": 0.01,
+              "write": 0.026,
+              "read": 0.031,
+              "futex": 0.001,
+              "clone3": 0.002
+            },
+            "ops": 2000
+          },
+          "goroutine spawn+exit (warm, keep pages)": {
+            "total": {
+              "ppoll": 631,
+              "mprotect": 2126,
+              "read": 1300,
+              "munmap": 39,
+              "write": 766,
+              "mmap": 40,
+              "futex": 1,
+              "clone3": 3,
+              "madvise": 3
+            },
+            "per_op": {
+              "ppoll": 0.316,
+              "mprotect": 1.063,
+              "read": 0.65,
+              "munmap": 0.02,
+              "write": 0.383,
+              "mmap": 0.02,
+              "futex": 0.001,
+              "clone3": 0.002,
+              "madvise": 0.002
+            },
+            "ops": 2000
+          },
+          "goroutine spawn+exit (warm, 4MB budget)": {
+            "total": {
+              "ppoll": 55,
+              "madvise": 2052,
+              "mprotect": 1130,
+              "munmap": 29,
+              "mmap": 28,
+              "read": 115,
+              "write": 83,
+              "futex": 18,
+              "clone3": 3
+            },
+            "per_op": {
+              "ppoll": 0.028,
+              "madvise": 1.026,
+              "mprotect": 0.565,
+              "munmap": 0.015,
+              "mmap": 0.014,
+              "read": 0.058,
+              "write": 0.042,
+              "futex": 0.009,
+              "clone3": 0.002
+            },
+            "ops": 2000
+          },
+          "stack pool RSS (MADV_FREE)": {
+            "total": {
+              "madvise": 2052,
+              "ppoll": 35,
+              "mprotect": 680,
+              "munmap": 20,
+              "write": 55,
+              "read": 75,
+              "mmap": 20,
+              "futex": 1,
+              "clone3": 3
+            },
+            "per_op": {
+              "madvise": 1.026,
+              "ppoll": 0.018,
+              "mprotect": 0.34,
+              "munmap": 0.01,
+              "write": 0.028,
+              "read": 0.038,
+              "mmap": 0.01,
+              "futex": 0.001,
+              "clone3": 0.002
+            },
+            "ops": 2000
+          },
+          "stack pool RSS (MADV_DONTNEED)": {
+            "total": {
+              "ppoll": 49,
+              "madvise": 2052,
+              "mprotect": 1046,
+              "munmap": 25,
+              "read": 102,
+              "write": 70,
+              "mmap": 25,
+              "futex": 1,
+              "clone3": 3
+            },
+            "per_op": {
+              "ppoll": 0.025,
+              "madvise": 1.026,
+              "mprotect": 0.523,
+              "munmap": 0.013,
+              "read": 0.051,
+              "write": 0.035,
+              "mmap": 0.013,
+              "futex": 0.001,
+              "clone3": 0.002
+            },
+            "ops": 2000
+          },
+          "stack pool RSS (keep pages)": {
+            "total": {
+              "ppoll": 622,
+              "mprotect": 2126,
+              "read": 1283,
+              "munmap": 39,
+              "write": 761,
+              "mmap": 40,
+              "clone3": 3,
+              "futex": 1,
+              "madvise": 3
+            },
+            "per_op": {
+              "ppoll": 0.311,
+              "mprotect": 1.063,
+              "read": 0.642,
+              "munmap": 0.02,
+              "write": 0.381,
+              "mmap": 0.02,
+              "clone3": 0.002,
+              "futex": 0.001,
+              "madvise": 0.002
+            },
+            "ops": 2000
+          },
+          "VMA count (1000 goroutines)": {
+            "total": {
+              "mprotect": 2004,
+              "munmap": 37,
+              "read": 229,
+              "write": 20,
+              "mmap": 39,
+              "futex": 1,
+              "clone3": 3,
+              "ppoll": 2,
+              "madvise": 3
+            },
+            "per_op": {
+              "mprotect": 1.002,
+              "munmap": 0.019,
+              "read": 0.115,
+              "write": 0.01,
+              "mmap": 0.02,
+              "futex": 0.001,
+              "clone3": 0.002,
+              "ppoll": 0.001,
+              "madvise": 0.002
+            },
+            "ops": 2000
+          },
+          "goroutine spawn+exit (deep stack, 64KB)": {
+            "total": {
+              "ppoll": 6,
+              "madvise": 2052,
+              "mprotect": 1028,
+              "munmap": 25,
+              "mmap": 25,
+              "futex": 1,
+              "clone3": 3,
+              "write": 18,
+              "read": 15
+            },
+            "per_op": {
+              "ppoll": 0.003,
+              "madvise": 1.026,
+              "mprotect": 0.514,
+              "munmap": 0.013,
+              "mmap": 0.013,
+              "futex": 0.001,
+              "clone3": 0.002,
+              "write": 0.009,
+              "read": 0.008
+            },
+            "ops": 2000
+          },
+          "stack pool RSS (deep stack, keep pages)": {
+            "total": {
+              "ppoll": 10,
+              "mprotect": 1029,
+              "munmap": 25,
+              "mmap": 25,
+              "write": 25,
+              "futex": 1,
+              "read": 25,
+              "clone3": 3,
+              "madvise": 3
+            },
+            "per_op": {
+              "ppoll": 0.005,
+              "mprotect": 0.515,
+              "munmap": 0.013,
+              "mmap": 0.013,
+              "write": 0.013,
+              "futex": 0.001,
+              "read": 0.013,
+              "clone3": 0.002,
+              "madvise": 0.002
+            },
+            "ops": 2000
+          },
+          "stack pool RSS (deep stack, DONTNEED)": {
+            "total": {
+              "ppoll": 7,
+              "madvise": 2052,
+              "mprotect": 792,
+              "munmap": 24,
+              "mmap": 23,
+              "write": 23,
+              "read": 19,
+              "futex": 1,
+              "clone3": 3
+            },
+            "per_op": {
+              "ppoll": 0.004,
+              "madvise": 1.026,
+              "mprotect": 0.396,
+              "munmap": 0.012,
+              "mmap": 0.012,
+              "write": 0.012,
+              "read": 0.01,
+              "futex": 0.001,
+              "clone3": 0.002
+            },
+            "ops": 2000
+          }
+        },
+        "bench_idle": {
+          "idle CPU (UI_IDLE_WAIT_MS=10)": {
+            "total": {
+              "ppoll": 391,
+              "mprotect": 260,
+              "futex": 1,
+              "write": 24,
+              "munmap": 9,
+              "clone3": 3,
+              "read": 9,
+              "mmap": 11,
+              "madvise": 3
+            },
+            "per_op": {
+              "ppoll": 0.391,
+              "mprotect": 0.26,
+              "futex": 0.001,
+              "write": 0.024,
+              "munmap": 0.009,
+              "clone3": 0.003,
+              "read": 0.009,
+              "mmap": 0.011,
+              "madvise": 0.003
+            },
+            "ops": 1000
+          },
+          "idle CPU (UI_IDLE_WAIT_MS=100)": {
+            "total": {
+              "ppoll": 40,
+              "mprotect": 260,
+              "munmap": 9,
+              "write": 24,
+              "clone3": 3,
+              "futex": 1,
+              "mmap": 11,
+              "read": 9,
+              "madvise": 3
+            },
+            "per_op": {
+              "ppoll": 0.04,
+              "mprotect": 0.26,
+              "munmap": 0.009,
+              "write": 0.024,
+              "clone3": 0.003,
+              "futex": 0.001,
+              "mmap": 0.011,
+              "read": 0.009,
+              "madvise": 0.003
+            },
+            "ops": 1000
+          },
+          "idle CPU (UI_IDLE_WAIT_MS=1000)": {
+            "total": {
+              "mprotect": 260,
+              "ppoll": 4,
+              "munmap": 9,
+              "write": 24,
+              "read": 9,
+              "clone3": 3,
+              "madvise": 3,
+              "mmap": 11,
+              "futex": 1
+            },
+            "per_op": {
+              "mprotect": 0.26,
+              "ppoll": 0.004,
+              "munmap": 0.009,
+              "write": 0.024,
+              "read": 0.009,
+              "clone3": 0.003,
+              "madvise": 0.003,
+              "mmap": 0.011,
+              "futex": 0.001
+            },
+            "ops": 1000
+          }
+        }
+      }
     }
   ],
-  "generated_at": "2026-11-27T17:27:51Z"
+  "generated_at": "2026-11-28T13:07:24Z"
 }
